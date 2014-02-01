@@ -87,6 +87,8 @@ struct archinfo {
 struct archinfo *find_arch(int elfmachine);
 void add_arch(struct archinfo *arch);
 
+struct elfc *read_oldmem(char *oldmem, char *vmcore);
+
 extern struct archinfo x86_64_arch;
 extern struct archinfo i386_arch;
 

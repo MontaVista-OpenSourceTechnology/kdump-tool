@@ -43,7 +43,6 @@
 #include <string.h>
 
 #include "list.h"
-#include "oldmem.h"
 #include "elfhnd.h"
 
 struct mementry {

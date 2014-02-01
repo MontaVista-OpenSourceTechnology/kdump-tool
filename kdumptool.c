@@ -47,7 +47,6 @@
 
 #include "list.h"
 #include "elfhnd.h"
-#include "oldmem.h"
 
 const char *progname;
 const char *subcmd;
@@ -586,8 +585,10 @@ tovelf(int argc, char *argv[])
 			pgd = vmci[0].val;
 			printf("Found phys pgd ptr = %llx\n",
 			       (unsigned long long) pgd);
-		}
+		} else
+			goto nopgd;
 	} else {
+nopgd:
 		fprintf(stderr, "pgd not given and not in input file.\n");
 		goto out_err;
 	}
