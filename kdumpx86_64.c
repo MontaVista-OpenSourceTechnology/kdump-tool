@@ -34,6 +34,7 @@
 #include "kdumptool.h"
 #include <stdio.h>
 #include <string.h>
+#include <endian.h>
 
 #include "elfhnd.h"
 
@@ -66,15 +67,16 @@ handle_pte(struct elfc *pelf, GElf_Addr vaddr, GElf_Addr pteaddr,
 
 	for (i = 0; i < 512; i++) {
 		GElf_Addr newvaddr;
+		uint64_t lpte = le64toh(pte[i]);
 
-		if (!(pte[i] & 0x1))
+		if (!(lpte & 0x1))
 			continue;
 
 		newvaddr = vaddr | (i << PAGESHIFT_4K);
 
 		/* 4K page */
 		rv = handle_page(pelf, 
-				 pte[i] & PHYSADDRMASK_4K,
+				 lpte & PHYSADDRMASK_4K,
 				 newvaddr | KERNBASE,
 				 PAGESIZE_4K, userdata);
 		if (rv == -1)
@@ -101,20 +103,21 @@ handle_pde(struct elfc *pelf, GElf_Addr vaddr, GElf_Addr pdeaddr,
 
 	for (i = 0; i < 512; i++) {
 		GElf_Addr newvaddr;
+		uint64_t lpde = le64toh(pde[i]);
 
-		if (!(pde[i] & 0x1))
+		if (!(lpde & 0x1))
 			continue;
 
 		newvaddr = vaddr | (i << PAGESHIFT_2M);
-		if (pde[i] & (1 << 7)) {
+		if (lpde & (1 << 7)) {
 			/* 2mb page */
 			rv = handle_page(pelf, 
-					 pde[i] & PHYSADDRMASK_2M,
+					 lpde & PHYSADDRMASK_2M,
 					 newvaddr | KERNBASE,
 					 PAGESIZE_2M, userdata);
 		} else {
 			rv = handle_pte(pelf, newvaddr,
-					pde[i] & PHYSADDRMASK_4K,
+					lpde & PHYSADDRMASK_4K,
 					handle_page, userdata);
 		}
 		if (rv == -1)
@@ -141,20 +144,21 @@ handle_pdp(struct elfc *pelf, GElf_Addr vaddr, GElf_Addr pdpaddr,
 
 	for (i = 0; i < 512; i++) {
 		GElf_Addr newvaddr;
+		uint64_t lpdp = le64toh(pdp[i]);
 
-		if (!(pdp[i] & 0x1))
+		if (!(lpdp & 0x1))
 			continue;
 
 		newvaddr = vaddr | (i << PAGESHIFT_1G);
-		if (pdp[i] & (1 << 7)) {
+		if (lpdp & (1 << 7)) {
 			/* 1gb page */
 			rv = handle_page(pelf, 
-					 pdp[i] & PHYSADDRMASK_1G,
+					 lpdp & PHYSADDRMASK_1G,
 					 newvaddr | KERNBASE,
 					 PAGESIZE_1G, userdata);
 		} else {
 			rv = handle_pde(pelf, newvaddr,
-					pdp[i] & PHYSADDRMASK_4K,
+					lpdp & PHYSADDRMASK_4K,
 					handle_page, userdata);
 		}
 		if (rv == -1)
@@ -180,10 +184,11 @@ x86_64_walk(struct elfc *pelf, GElf_Addr pgd,
 	}
 
 	for (i = 0; i < 512; i++) {
-		if (!(pml[i] & 0x1))
+		uint64_t lpml = le64toh(pml[i]);
+		if (!(lpml & 0x1))
 			continue;
 
-		rv = handle_pdp(pelf, i << 39, pml[i] & PHYSADDRMASK_4K,
+		rv = handle_pdp(pelf, i << 39, lpml & PHYSADDRMASK_4K,
 				handle_page, userdata);
 		if (rv == -1)
 			return -1;

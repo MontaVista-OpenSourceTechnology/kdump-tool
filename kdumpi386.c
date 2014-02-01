@@ -34,6 +34,7 @@
 #include "kdumptool.h"
 #include <stdio.h>
 #include <string.h>
+#include <endian.h>
 
 #include "elfhnd.h"
 
@@ -71,15 +72,16 @@ handle_pte(struct elfc *pelf, GElf_Addr vaddr, GElf_Addr pteaddr,
 
 	for (i = 0; i < 1024; i++) {
 		GElf_Addr newvaddr;
+		uint32_t lpte = le32toh(pte[i]);
 
-		if (!(pte[i] & 0x1))
+		if (!(lpte & 0x1))
 			continue;
 
 		newvaddr = vaddr | (i << PAGESHIFT_4K);
 
 		/* 4K page */
 		rv = handle_page(pelf, 
-				 pte[i] & PHYSADDRMASK_4K,
+				 lpte & PHYSADDRMASK_4K,
 				 newvaddr | KERNBASE,
 				 PAGESIZE_4K, userdata);
 		if (rv == -1)
@@ -106,20 +108,21 @@ handle_pde(struct elfc *pelf, GElf_Addr pgd,
 
 	for (i = 0; i < 1024; i++) {
 		GElf_Addr newvaddr;
+		uint32_t lpde = le32toh(pde[i]);
 
-		if (!(pde[i] & 0x1))
+		if (!(lpde & 0x1))
 			continue;
 
 		newvaddr = i << PAGESHIFT_4M;
-		if (pde[i] & (1 << 7)) {
+		if (lpde & (1 << 7)) {
 			/* 4mb page */
 			rv = handle_page(pelf, 
-					 pde[i] & PHYSADDRMASK_4M,
+					 lpde & PHYSADDRMASK_4M,
 					 newvaddr | KERNBASE,
 					 PAGESIZE_4M, userdata);
 		} else {
 			rv = handle_pte(pelf, newvaddr,
-					pde[i] & PHYSADDRMASK_4K,
+					lpde & PHYSADDRMASK_4K,
 					handle_page, userdata);
 		}
 		if (rv == -1)
@@ -146,15 +149,16 @@ handle_pae_pte(struct elfc *pelf, GElf_Addr vaddr, GElf_Addr pteaddr,
 
 	for (i = 0; i < 512; i++) {
 		GElf_Addr newvaddr;
+		uint64_t lpte = le64toh(pte[i]);
 
-		if (!(pte[i] & 0x1))
+		if (!(lpte & 0x1))
 			continue;
 
 		newvaddr = vaddr | (i << PAGESHIFT_4K);
 
 		/* 4K page */
 		rv = handle_page(pelf, 
-				 pte[i] & PHYSADDRMASK_4K,
+				 lpte & PHYSADDRMASK_4K,
 				 newvaddr | KERNBASE,
 				 PAGESIZE_4K, userdata);
 		if (rv == -1)
@@ -181,20 +185,21 @@ handle_pae_pde(struct elfc *pelf, GElf_Addr vaddr, GElf_Addr pdeaddr,
 
 	for (i = 0; i < 512; i++) {
 		GElf_Addr newvaddr;
+		uint64_t lpde = le64toh(pde[i]);
 
-		if (!(pde[i] & 0x1))
+		if (!(lpde & 0x1))
 			continue;
 
 		newvaddr = vaddr | (i << PAGESHIFT_2M);
-		if (pde[i] & (1 << 7)) {
+		if (lpde & (1 << 7)) {
 			/* 2mb page */
 			rv = handle_page(pelf, 
-					 pde[i] & PHYSADDRMASK_2M,
+					 lpde & PHYSADDRMASK_2M,
 					 newvaddr | KERNBASE,
 					 PAGESIZE_2M, userdata);
 		} else {
 			rv = handle_pae_pte(pelf, newvaddr,
-					    pde[i] & PHYSADDRMASK_4K,
+					    lpde & PHYSADDRMASK_4K,
 					    handle_page, userdata);
 		}
 		if (rv == -1)
@@ -221,13 +226,14 @@ handle_pae_pdp(struct elfc *pelf, GElf_Addr pgd,
 
 	for (i = 0; i < 4; i++) {
 		GElf_Addr newvaddr;
+		uint64_t lpdp = le64toh(pdp[i]);
 
-		if (!(pdp[i] & 0x1))
+		if (!(lpdp & 0x1))
 			continue;
 
 		newvaddr = i << PAGESHIFT_1G;
 		rv = handle_pae_pde(pelf, newvaddr,
-				    pdp[i] & PHYSADDRMASK_4K,
+				    lpdp & PHYSADDRMASK_4K,
 				    handle_page, userdata);
 		if (rv == -1)
 			return -1;
