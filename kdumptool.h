@@ -91,5 +91,6 @@ struct elfc *read_oldmem(char *oldmem, char *vmcore);
 
 extern struct archinfo x86_64_arch;
 extern struct archinfo i386_arch;
+extern struct archinfo mips_arch;
 
 #endif /* KDUMPTOOL_H */
