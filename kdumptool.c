@@ -118,9 +118,16 @@ handle_vmcoreinfo(struct vmcoreinfo_data *vals, const char *data, size_t len)
 			if (strncmp(data + off, name, namesize) != 0)
 				continue;
 			off += namesize;
-			val = strtoull(data + off, &end, vals[i].base);
-			if ((*end != '\n') && (*end != '\0'))
-				continue;
+			if (vals[i].base == VMINFO_YN_BASE) {
+				if (*(data + off) == 'y')
+					val = 1;
+				else
+					val = 0;
+			} else {
+				val = strtoull(data + off, &end, vals[i].base);
+				if ((*end != '\n') && (*end != '\0'))
+					continue;
+			}
 			vals[i].val = val;
 			vals[i].found = 1;
 			break;
@@ -745,6 +752,7 @@ main(int argc, char *argv[])
 	}
 
 	add_arch(&x86_64_arch);
+	add_arch(&i386_arch);
 
 	for (i = 0; subcommands[i].name; i++) {
 		if (strcmp(subcommands[i].name, argv[optind]) == 0)

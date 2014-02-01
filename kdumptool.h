@@ -57,7 +57,9 @@ int copy_elf_notes(struct elfc *out, struct elfc *in);
  * Scan the vmcoreinfo in the notes looking for values.  A value
  * matching "name" will be hunted for.  If found, "found" will be set
  * to true and the value will be extracted using "base" (like base 10,
- * base 16, zero means use C conventions) and stored in "val".
+ * base 16, zero means use C conventions) and stored in "val".  If
+ * base is VMINFO_YN_BASE, val is 1 if the part after the "=" is 'y'
+ * and 0 otherwise.
  */
 struct vmcoreinfo_data {
 	char *name;
@@ -66,6 +68,7 @@ struct vmcoreinfo_data {
 	uint64_t val;
 };
 int handle_vminfo_notes(struct elfc *elf, struct vmcoreinfo_data *vals);
+#define VMINFO_YN_BASE	-1
 
 typedef int (*handle_page_f)(struct elfc *pelf,
 			     GElf_Addr paddr,
@@ -85,5 +88,6 @@ struct archinfo *find_arch(int elfmachine);
 void add_arch(struct archinfo *arch);
 
 extern struct archinfo x86_64_arch;
+extern struct archinfo i386_arch;
 
 #endif /* KDUMPTOOL_H */
