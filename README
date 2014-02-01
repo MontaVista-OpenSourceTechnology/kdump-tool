@@ -1,0 +1,15 @@
+This is kdumptool, a tool for creating usable coredumps from a kernel
+crash.
+
+To use this, use the kexec/kdump instructions to get into a crash dump
+kernel (the kernel that boots from the crashed kernel).  It will have
+/dev/oldmem and /proc/vmcore available.
+
+Run "kdumptool topelf -o pelffile" and copy pelffile to your system
+where you will be doing the analysis.
+
+Before doing analysis, run "kdumptool tovelf -i pelffile -o kcore" to
+generate the gdb-usable core file.
+
+Then do "gdb vmlinux kcore".  For more information, see:
+  http://www.elinux.org/Debugging_The_Linux_Kernel_Using_Gdb
