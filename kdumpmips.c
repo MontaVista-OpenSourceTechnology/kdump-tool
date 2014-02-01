@@ -38,6 +38,15 @@
 
 #include "elfhnd.h"
 
+#define ENTRIES_PER_PGTAB(d, pgtab_size) \
+	((1 << d->pgd_order) * (1 << d->page_shift) / (pgtab_size))
+
+#define MAX_SHIFT 16
+#define MIN_SHIFT 12
+#define MAX_ORDER 1
+#define MAX_PGTAB_ENTRIES(pgentry_size) ((1 << MAX_SHIFT) * (1 << MAX_ORDER) / \
+					 (pgentry_size))
+
 static uint64_t convbe64toh(uint64_t val)
 {
 	return be64toh(val);
@@ -77,8 +86,8 @@ static int
 handle_32pte(struct mips_walk_data *d, GElf_Addr vaddr, GElf_Addr pteaddr,
 	     handle_page_f handle_page, void *userdata)
 {
-	uint32_t pte[2048];
-	int pte_count = (1 << d->pte_order) * 1024;
+	uint32_t pte[MAX_PGTAB_ENTRIES(sizeof(uint32_t))];
+	int pte_count = ENTRIES_PER_PGTAB(d,  sizeof(uint32_t));
 	int i;
 	int rv;
 
@@ -111,8 +120,8 @@ static int
 handle_32pmd(struct mips_walk_data *d, GElf_Addr vaddr, GElf_Addr pmdaddr,
 	     handle_page_f handle_page, void *userdata)
 {
-	uint32_t pmd[2048];
-	int pmd_count = (1 << d->pmd_order) * 1024;
+	uint32_t pmd[MAX_PGTAB_ENTRIES(sizeof(uint32_t))];
+	int pmd_count = ENTRIES_PER_PGTAB(d,  sizeof(uint32_t));
 	int i;
 	int rv;
 
@@ -144,8 +153,8 @@ static int
 walk_mips32(struct mips_walk_data *d, GElf_Addr pgdaddr,
 	    handle_page_f handle_page, void *userdata)
 {
-	uint32_t pgd[2048];
-	int pgd_count = (1 << d->pgd_order) * 1024;
+	uint32_t pgd[MAX_PGTAB_ENTRIES(sizeof(uint32_t))];
+	int pgd_count = ENTRIES_PER_PGTAB(d,  sizeof(uint32_t));
 	int i;
 	int rv;
 
@@ -155,10 +164,10 @@ walk_mips32(struct mips_walk_data *d, GElf_Addr pgdaddr,
 		d->conv32 = convle32toh;
 
 	if (d->pmd_present) {
-		d->pmd_shift = d->page_shift + (d->pte_order ? 10 : 9);
-		d->pgd_shift = d->pmd_shift + (d->pmd_order ? 10 : 9);
+		d->pmd_shift = d->page_shift + (d->pte_order ? 11 : 10);
+		d->pgd_shift = d->pmd_shift + (d->pmd_order ? 11 : 10);
 	} else
-		d->pgd_shift = d->page_shift + (d->pte_order ? 10 : 9);
+		d->pgd_shift = d->page_shift + (d->pte_order ? 11 : 10);
 
 	rv = elfc_read_pmem(d->pelf, pgdaddr, pgd,
 			    pgd_count * sizeof(uint32_t));
@@ -193,8 +202,8 @@ static int
 handle_64pte(struct mips_walk_data *d, GElf_Addr vaddr, GElf_Addr pteaddr,
 	     handle_page_f handle_page, void *userdata)
 {
-	uint64_t pte[1024];
-	int pte_count = (1 << d->pte_order) * 512;
+	uint64_t pte[MAX_PGTAB_ENTRIES(sizeof(uint64_t))];
+	int pte_count = ENTRIES_PER_PGTAB(d,  sizeof(uint64_t));
 	int i;
 	int rv;
 
@@ -227,8 +236,8 @@ static int
 handle_64pmd(struct mips_walk_data *d, GElf_Addr vaddr, GElf_Addr pmdaddr,
 	     handle_page_f handle_page, void *userdata)
 {
-	uint64_t pmd[1024];
-	int pmd_count = (1 << d->pmd_order) * 512;
+	uint64_t pmd[MAX_PGTAB_ENTRIES(sizeof(uint64_t))];
+	int pmd_count = ENTRIES_PER_PGTAB(d,  sizeof(uint64_t));
 	int i;
 	int rv;
 
@@ -260,8 +269,8 @@ static int
 walk_mips64(struct mips_walk_data *d, GElf_Addr pgdaddr,
 	    handle_page_f handle_page, void *userdata)
 {
-	uint64_t pgd[1024];
-	int pgd_count = (1 << d->pgd_order) * 512;
+	uint64_t pgd[MAX_PGTAB_ENTRIES(sizeof(uint64_t))];
+	int pgd_count = ENTRIES_PER_PGTAB(d,  sizeof(uint64_t));
 	int i;
 	int rv;
 
@@ -273,8 +282,9 @@ walk_mips64(struct mips_walk_data *d, GElf_Addr pgdaddr,
 	if (d->pmd_present) {
 		d->pmd_shift = d->page_shift + (d->pte_order ? 10 : 9);
 		d->pgd_shift = d->pmd_shift + (d->pmd_order ? 10 : 9);
-	} else
+	} else {
 		d->pgd_shift = d->page_shift + (d->pte_order ? 10 : 9);
+	}
 
 	rv = elfc_read_pmem(d->pelf, pgdaddr, pgd,
 			    pgd_count * sizeof(uint64_t));
@@ -340,21 +350,27 @@ mips_walk(struct elfc *pelf, GElf_Addr pgd,
 	d->is_64bit = elfc_getclass(pelf) == ELFCLASS64;
 	d->is_bigendian = elfc_getencoding(pelf) == ELFDATA2MSB;
 
-	if (d->pgd_order > 1) {
+	if (d->pgd_order > MAX_ORDER) {
 		fprintf(stderr, "pgd_order is %d, only 0 or 1 are supported.",
 			d->pgd_order);
 		return -1;
 	}
 
-	if (d->pmd_present && d->pmd_order > 1) {
+	if (d->pmd_present && d->pmd_order > MAX_ORDER) {
 		fprintf(stderr, "pmd_order is %d, only 0 or 1 are supported.",
 			d->pmd_order);
 		return -1;
 	}
 
-	if (d->pte_order > 1) {
+	if (d->pte_order > MAX_ORDER) {
 		fprintf(stderr, "pte_order is %d, only 0 or 1 are supported.",
 			d->pte_order);
+		return -1;
+	}
+
+	if ((d->page_shift > MAX_SHIFT) || (d->page_shift < MIN_SHIFT)) {
+		fprintf(stderr, "page_shift is %d, only %d-%d are supported.",
+			d->page_shift, MIN_SHIFT, MAX_SHIFT);
 		return -1;
 	}
 
