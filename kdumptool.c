@@ -79,14 +79,19 @@ subcmd_help(const char *extra, const struct option *longopts,
 		printf("%s\n", helpstr[i]);
 }
 
+typedef int (*vminfo_item_handler)(const char *name, int namelen,
+				   const char *val, int vallen,
+				   void *userdata);
+
 static int
-handle_vmcoreinfo(struct vmcoreinfo_data *vals, const char *data, size_t len)
+handle_vmcoreinfo(const char *data, size_t len,
+		  vminfo_item_handler handler, void *userdata)
 {
 	size_t off = 0;
 
 	while (off < len) {
-		int i;
 		size_t next_off = off;
+		int eqsign = -1;
 
 		if (*(data + next_off) == '\0')
 			break;
@@ -95,6 +100,8 @@ handle_vmcoreinfo(struct vmcoreinfo_data *vals, const char *data, size_t len)
 				break;
 			if (*(data + next_off) == '\0')
 				break;
+			if ((eqsign == -1) && (*(data + next_off) == '='))
+				eqsign = next_off;
 			next_off++;
 		}
 		/*
@@ -104,40 +111,21 @@ handle_vmcoreinfo(struct vmcoreinfo_data *vals, const char *data, size_t len)
 		 */
 		if (next_off >= len)
 			return -1;
-		next_off++;
-
-		for (i = 0; vals[i].name; i++) {
-			char *name = vals[i].name;
-			int namesize = strlen(name);
-			uint64_t val;
-			char *end;
-
-			if (off + namesize >= next_off)
-				continue;
-			if (strncmp(data + off, name, namesize) != 0)
-				continue;
-			off += namesize;
-			if (vals[i].base == VMINFO_YN_BASE) {
-				if (*(data + off) == 'y')
-					val = 1;
-				else
-					val = 0;
-			} else {
-				val = strtoull(data + off, &end, vals[i].base);
-				if ((*end != '\n') && (*end != '\0'))
-					continue;
-			}
-			vals[i].val = val;
-			vals[i].found = 1;
-			break;
-		}
+		if (eqsign == -1)
+			return -1;
+		if (*(data + next_off) != '\0')
+			next_off++;
+		handler(data + off, eqsign - off,
+			data + eqsign + 1, next_off - eqsign + 1,
+			userdata);
 		off = next_off;
 	}
 	return 0;
 }
 
-int
-handle_vminfo_notes(struct elfc *elf, struct vmcoreinfo_data *vals)
+static int
+scan_for_vminfo_notes(struct elfc *elf,
+		      vminfo_item_handler handler, void *userdata)
 {
 	int rv = 0;
 	int i;
@@ -159,10 +147,90 @@ handle_vminfo_notes(struct elfc *elf, struct vmcoreinfo_data *vals)
 		if (strcmp(name, "VMCOREINFO") != 0)
 			continue;
 
-		handle_vmcoreinfo(vals, data, datalen);
+		rv = handle_vmcoreinfo(data, datalen, handler, userdata);
+		if (rv == -1)
+			return -1;
 	}
 
 	return rv;
+}
+
+struct vmcore_finder_data {
+	int (*handler)(const char *name, const char *str, int strlen,
+		       void *userdata);
+	const char *name;
+	void *userdata;
+	int namelen;
+};
+
+static int
+vmcoreinfo_finder(const char *name, int namelen,
+		  const char *val, int vallen,
+		  void *userdata)
+{
+	struct vmcore_finder_data *d = userdata;
+
+	if ((d->namelen == namelen) &&
+	    (strncmp(name, d->name, namelen) == 0))
+		return d->handler(d->name, val, vallen, d->userdata);
+	return 0;
+}
+
+int
+find_vmcore_entries(struct elfc *elf, const char *entry,
+		    int (*handler)(const char *name, const char *str,
+				   int strlen, void *userdata),
+		    void *userdata)
+{
+	struct vmcore_finder_data data;
+
+	data.handler = handler;
+	data.userdata = userdata;
+	data.name = entry;
+	data.namelen = strlen(entry);
+	return scan_for_vminfo_notes(elf, vmcoreinfo_finder, &data);
+}
+
+static int
+vmcoreinfo_scanner(const char *nameptr, int namelen,
+		   const char *valptr, int vallen,
+		   void *userdata)
+{
+	struct vmcoreinfo_data *vals = userdata;
+	int i;
+
+	for (i = 0; vals[i].name; i++) {
+		char *name = vals[i].name;
+		int namesize = strlen(name);
+		uint64_t val;
+		char *end;
+
+		if (namelen != namesize)
+			continue;
+		if (strncmp(name, nameptr, namelen) != 0)
+			continue;
+
+		if (vals[i].base == VMINFO_YN_BASE) {
+			if (*valptr == 'y')
+				val = 1;
+			else
+				val = 0;
+		} else {
+			val = strtoull(valptr, &end, vals[i].base);
+			if ((*end != '\n') && (*end != '\0'))
+				continue;
+		}
+
+		vals[i].val = val;
+		vals[i].found = 1;
+	}
+	return 0;
+}
+
+int
+handle_vminfo_notes(struct elfc *elf, struct vmcoreinfo_data *vals)
+{
+	return scan_for_vminfo_notes(elf, vmcoreinfo_scanner, vals);
 }
 
 int
@@ -208,7 +276,7 @@ topelf(int argc, char *argv[])
 	static const char *helpstr[] = {
 		"This info",
 		"File to use instead of /dev/oldmem",
-		"File send output to, instead of stdout",
+		"File send output to",
 		"The vmcore file, defaults to /proc/vmcore",
 		NULL
 	};
@@ -216,7 +284,7 @@ topelf(int argc, char *argv[])
 	int rv = 0;
 	struct elfc *elf = NULL;
 	struct vmcoreinfo_data vmci[] = {
-		{ "NUMBER(phys_pgd_ptr)=", 10 },
+		{ "ADDRESS(phys_pgd_ptr)", 16 },
 		{ NULL }
 	};
 
@@ -263,7 +331,6 @@ topelf(int argc, char *argv[])
 	if (ofd == -1) {
 		fprintf(stderr, "Unable to open %s: %s\n", outfile,
 			strerror(errno));
-		rv = -1;
 		goto out_err;
 	}
 
@@ -276,12 +343,16 @@ topelf(int argc, char *argv[])
 		goto out_err;
 	}
 
-out_err:
+out:
 	if (elf)
 		elfc_free(elf);
 	if (ofd != -1)
 		close(ofd);
 	return rv;
+
+out_err:
+	rv = 1;
+	goto out;
 }
 
 struct velf_data {
@@ -481,7 +552,7 @@ tovelf(int argc, char *argv[])
 		"This info",
 		"The input file, defaults to /dev/oldmem if intype is oldmem, "
 		"otherwise required",
-		"File send output to, instead of stdout",
+		"File send output to",
 		"The vmcore file, defaults to /proc/vmcore, only for oldmem",
 		"The file type, either pelf or oldmem, defaults to pelf",
 		"The physical address of the kernel page descriptor",
@@ -494,7 +565,7 @@ tovelf(int argc, char *argv[])
 	int pgd_set = 0;
 	struct elfc *elf = NULL, *velf = NULL;
 	struct vmcoreinfo_data vmci[] = {
-		{ "NUMBER(phys_pgd_ptr)=", 10 },
+		{ "ADDRESS(phys_pgd_ptr)", 16 },
 		{ NULL }
 	};
 	int do_oldmem = 0;
@@ -503,7 +574,7 @@ tovelf(int argc, char *argv[])
 
 	for (;;) {
 		int curr_optind = optind;
-		int c = getopt_long(argc, argv, "+ho:i:v:I:", longopts,
+		int c = getopt_long(argc, argv, "+ho:i:v:I:P:", longopts,
 				    NULL);
 		if (c == -1)
 			break;
@@ -548,6 +619,7 @@ tovelf(int argc, char *argv[])
 	if (optind < argc) {
 		subcmd_usage("Too many arguments, starting at %s\n",
 			     argv[optind]);
+		goto out_err;
 	}
 
 	if (do_oldmem) {
@@ -573,7 +645,7 @@ tovelf(int argc, char *argv[])
 		rv = elfc_open(elf, fd);
 		if (rv) {
 			fprintf(stderr, "Unable to elfc open %s: %s\n", infile,
-				strerror(elfc_get_errno(velf)));
+				strerror(elfc_get_errno(elf)));
 			goto out_err;
 		}
 		fd = -1;
@@ -600,7 +672,6 @@ nopgd:
 	if (ofd == -1) {
 		fprintf(stderr, "Unable to open %s: %s\n", outfile,
 			strerror(errno));
-		rv = -1;
 		goto out_err;
 	}
 
@@ -648,7 +719,7 @@ nopgd:
 		goto out_err;
 	}
 
-out_err:
+out:
 	if (fd != -1)
 		close(fd);
 	if (velf)
@@ -657,9 +728,209 @@ out_err:
 		close(elfc_get_fd(elf));
 		elfc_free(elf);
 	}
-	if ((ofd != 1) && (ofd != -1))
+	if (ofd != -1)
 		close(ofd);
 	return rv;
+
+out_err:
+	rv = 1;
+	goto out;
+}
+
+static void
+dump_memory(unsigned char *buf, GElf_Addr addr, size_t size)
+{
+	char cbuf[17];
+
+	cbuf[16] = '\0';
+	while (size >= 16) {
+		int i;
+
+		for (i = 0; i < 16; i++)
+			cbuf[i] = isprint(buf[i]) ? buf[i] : '.';
+		printf("%llx: %2.2x %2.2x %2.2x %2.2x %2.2x %2.2x %2.2x %2.2x %2.2x %2.2x %2.2x %2.2x %2.2x %2.2x %2.2x %2.2x  %s\n",
+		       (unsigned long long) addr,
+		       buf[0], buf[1], buf[2], buf[3],
+		       buf[4], buf[5], buf[6], buf[7],
+		       buf[8], buf[9], buf[10], buf[11],
+		       buf[12], buf[13], buf[14], buf[15], cbuf);
+		buf += 16;
+		size -= 16;
+		addr += 16;
+	}
+	if (size > 0) {
+		int i;
+
+		printf("%llx:", (unsigned long long) addr);
+		for (i = 0; i < size; i++) {
+			cbuf[i] = isprint(buf[i]) ? buf[i] : '.';
+			printf(" %2.2x", buf[i]);
+		}
+		for (; i < 16; i++) {
+			cbuf[i] = isprint(buf[i]) ? buf[i] : ' ';
+			printf("   ");
+		}
+		printf("%s\n", cbuf);
+	}
+}
+
+static int
+dumpmem(int argc, char *argv[])
+{
+	char *infile = NULL;
+	char *vmcore = "/proc/vmcore";
+	static const struct option longopts[] = {
+		{ "help",	no_argument,		NULL, 'h' },
+		{ "infile",	required_argument,	NULL, 'i' },
+		{ "vmcore",	required_argument,	NULL, 'v' },
+		{ "intype",	required_argument,	NULL, 'I' },
+		{ "is_physical",no_argument,		NULL, 'p' },
+		{ NULL }
+	};
+	static const char *helpstr[] = {
+		"This info",
+		"The input file, defaults to /dev/oldmem if intype is oldmem, "
+		"otherwise required",
+		"The vmcore file, defaults to /proc/vmcore, only for oldmem",
+		"The file type, either pelf or oldmem, defaults to pelf",
+		"Is the address physical or virtual?",
+		"<addr> - Start address",
+		"<size> - Number of bytes to dump",
+		NULL
+	};
+	int fd = -1;
+	int rv = 0;
+	struct elfc *elf = NULL;
+	int do_oldmem = 0;
+	GElf_Addr addr;
+	GElf_Addr size;
+	int is_phys = 0;
+	char *endc;
+	void *buf;
+
+	for (;;) {
+		int curr_optind = optind;
+		int c = getopt_long(argc, argv, "+hi:v:I:p", longopts,
+				    NULL);
+		if (c == -1)
+			break;
+		switch (c) {
+		case 'i':
+			infile = optarg;
+			break;
+		case 'v':
+			vmcore = optarg;
+			break;
+		case 'I':
+			if (strcmp(optarg, "oldmem") == 0) {
+				do_oldmem = 1;
+			} else if (strcmp(optarg, "pelf") == 0) {
+				do_oldmem = 0;
+			} else {
+				subcmd_usage("Unknown input type: %s\n",
+					     optarg);
+			}
+			break;
+		case 'h':
+			subcmd_help(" <addr> <size>", longopts, helpstr);
+			return 0;
+		case 'p':
+			is_phys = 1;
+			break;
+		case '?':
+			subcmd_usage("Unknown option: %s\n", argv[curr_optind]);
+		}
+	}
+
+	if (optind >= argc) {
+		subcmd_usage("Start address not given\n");
+		return 1;
+	}
+	addr = strtoull(argv[optind], &endc, 16);
+	if (*endc != '\0') {
+		subcmd_usage("Invalid start address: %s\n",
+			     argv[optind]);
+		return 1;
+	}
+	optind++;
+
+	if (optind >= argc) {
+		subcmd_usage("Dump size not given\n");
+		return 1;
+	}
+	size = strtoull(argv[optind], &endc, 16);
+	if (*endc != '\0') {
+		subcmd_usage("Invalid dump size: %s\n",
+			     argv[optind]);
+		return 1;
+	}
+	optind++;
+
+	if (optind < argc) {
+		subcmd_usage("Too many arguments, starting at %s\n",
+			     argv[optind]);
+		return 1;
+	}
+
+	if (do_oldmem) {
+		if (!infile)
+			infile = "/dev/oldmem";
+		elf = read_oldmem(infile, vmcore);
+		if (!elf)
+			goto out_err;
+	} else {
+		if (!infile)
+			subcmd_usage("No input file specified\n");
+		fd = open(infile, O_RDONLY);
+		if (fd == -1) {
+			fprintf(stderr, "Unable to open %s: %s\n", infile,
+				strerror(errno));
+			goto out_err;
+		}
+		elf = elfc_alloc();
+		if (!elf) {
+			fprintf(stderr, "Out of memory allocating elf obj\n");
+			goto out_err;
+		}
+		rv = elfc_open(elf, fd);
+		if (rv) {
+			fprintf(stderr, "Unable to elfc open %s: %s\n", infile,
+				strerror(elfc_get_errno(elf)));
+			goto out_err;
+		}
+		fd = -1;
+	}
+
+	buf = malloc(size);
+	if (!buf) {
+		fprintf(stderr, "Out of memory allocating buffer\n");
+		goto out_err;
+	}
+
+	if (is_phys)
+		rv = elfc_read_pmem(elf, addr, buf, size);
+	else
+		rv = elfc_read_vmem(elf, addr, buf, size);
+	if (rv == -1) {
+		fprintf(stderr, "Unable read data from file: %s\n",
+			strerror(elfc_get_errno(elf)));
+		goto out_err;
+	}
+
+	dump_memory(buf, addr, size);
+	
+out:
+	if (fd != -1)
+		close(fd);
+	if (elf) {
+		close(elfc_get_fd(elf));
+		elfc_free(elf);
+	}
+	return rv;
+
+out_err:
+	rv = 1;
+	goto out;
 }
 
 static struct list arches = LIST_INIT(arches);
@@ -692,6 +963,7 @@ struct {
 	  "elf file" },
 	{ "tovelf", tovelf, "Convert /dev/oldmem or a pelf file to a "
 	  "virtual elf file" },
+	{ "dumpmem", dumpmem, "Dump raw memory in an elf or oldmem file" },
 	{ NULL }
 };
 

@@ -248,7 +248,7 @@ i386_walk(struct elfc *pelf, GElf_Addr pgd,
 	int pae = 0;
 	int rv;
 	struct vmcoreinfo_data vmci[] = {
-		{ "CONFIG_X86_PAE=", VMINFO_YN_BASE },
+		{ "CONFIG_X86_PAE", VMINFO_YN_BASE },
 		{ NULL }
 	};
 

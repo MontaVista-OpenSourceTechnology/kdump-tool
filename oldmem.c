@@ -129,6 +129,125 @@ fdio_set_data(struct elfc *e, GElf_Phdr *phdr, void *data,
 	return 0;
 }
 
+struct memrange {
+	uint64_t start;
+	uint64_t size;
+};
+
+static struct memrange init_memrange = { 0, -1ULL };
+
+static struct memrange *memrange = &init_memrange;
+static int num_memrange = 1;
+
+static int memrange_handler(const char *name, const char *str,
+			    int strlen, void *userdata)
+{
+	uint64_t start, size;
+	const char *c;
+	char *end;
+	static struct memrange *new_memrange;
+
+	if (memrange == &init_memrange) {
+		num_memrange = 0;
+		memrange = NULL;
+	}
+
+	for (c = str; *c && (*c != '@') && (*c != '\n'); c++)
+		;
+	if (*c != '@')
+		goto out_err;
+
+	size = strtoull(str, &end, 16);
+	if (*end != '@')
+		goto out_err;
+
+	start = strtoull(c + 1, &end, 16);
+	if ((*end != '\n') && (*end != '\0'))
+		goto out_err;
+
+	new_memrange = malloc(sizeof(*new_memrange) * (num_memrange + 1));
+	if (memrange) {
+		memcpy(new_memrange, memrange, 
+		       sizeof(*new_memrange) * num_memrange);
+		free(memrange);
+	}
+	memrange = new_memrange;
+	memrange[num_memrange].start = start;
+	memrange[num_memrange].size = size;
+	num_memrange++;
+
+	return 0;
+
+out_err:
+	fprintf(stderr, "Invalid memrange in vmcoreinfo\n");
+	return -1;
+}
+
+static int
+scan_memrange(int mfd, uint64_t rangestart, uint64_t rangesize,
+	      unsigned char *buf, int page_size, const char *oldmem,
+	      struct list *mems)
+{
+	off_t start = rangestart;
+	off_t pos = rangestart;
+	int nr_phdr = 0;
+	struct mementry *e;
+	int rv;
+
+	if (lseek(mfd, start, SEEK_SET) == -1) {
+		fprintf(stderr, "Seek error in %s: %s\n",
+			oldmem, strerror(errno));
+		return -1;
+	}
+	while (pos <= (rangestart + rangesize)) {
+		rv = read(mfd, buf, page_size);
+		if (rv == -1) {
+			if (errno == ENOMEM) {
+				if (start != pos) {
+					e = newmems(0, start, pos - start);
+					if (!e)
+						goto out_err;
+					list_add_last(mems, &e->link);
+					nr_phdr++;
+				}
+				start = pos + page_size;
+				rv = lseek(mfd, pos + page_size, SEEK_SET);
+				if (rv == -1) {
+					fprintf(stderr, "Error seek %s: %s\n",
+						oldmem, strerror(errno));
+					goto out_err;
+				}
+			} else {
+				fprintf(stderr, "Unable to read %s: %s\n",
+					oldmem, strerror(errno));
+				goto out_err;
+			}
+		} else if (rv == 0)
+			break;
+		pos += page_size;
+		if (((Elf32_Word) ((pos - start) + page_size)) < page_size) {
+			/* Next page will not fit in phdr */
+			e = newmems(start, start, pos - start);
+			if (!e)
+				goto out_err;
+			list_add_last(mems, &e->link);
+			nr_phdr++;
+			start = pos;
+		}
+	}
+	if (start != pos) {
+		e = newmems(0, start, pos - start);
+		if (!e)
+			goto out_err;
+		list_add_last(mems, &e->link);
+		nr_phdr++;
+	}
+	return nr_phdr;
+
+out_err:
+	return -1;
+}
+
 struct elfc *
 read_oldmem(char *oldmem, char *vmcore)
 {
@@ -140,14 +259,13 @@ read_oldmem(char *oldmem, char *vmcore)
 	struct elfc *velf = NULL, *elf = NULL;
 	int vfd = -1, mfd = -1;
 	int rv = 0;
-	off_t start = 0;
-	off_t pos = 0;
 	struct fdio_data *fdio_data;
 	struct vmcoreinfo_data vmci[] = {
-		{ "PAGESIZE=", 10 },
+		{ "PAGESIZE", 10 },
 		{ NULL }
 	};
 	int page_size;
+	int memr;
 
 	list_init(&mems);
 
@@ -175,9 +293,23 @@ read_oldmem(char *oldmem, char *vmcore)
 		page_size = vmci[0].val;
 	} else {
 		page_size = 4096;
-		fprintf(stderr, "Warning: Page size in vmcore, assuming %d\n",
+		fprintf(stderr,
+			"Warning: Page size not in vmcore, assuming %d\n",
 			page_size);
 	}
+
+	rv = find_vmcore_entries(velf, "MEMRANGE(sysram)",
+				 memrange_handler, NULL);
+	if (rv) {
+		fprintf(stderr,
+			"Error: Unable to scan memrange entries.\n");
+		goto out_err;
+	}
+	if (memrange == &init_memrange) {
+		fprintf(stderr,
+			"Warning: No memrange entries from old nernel.\n"
+			"  Will try to scan all of memory.\n");
+	}	
 
 	elf = elfc_alloc();
 	if (!elf) {
@@ -214,50 +346,14 @@ read_oldmem(char *oldmem, char *vmcore)
 		goto out_err;
 	}
 
-	for (;;) {
-		rv = read(mfd, buf, page_size);
-		if (rv == -1) {
-			if (errno == ENOMEM) {
-				if (start != pos) {
-					e = newmems(0, start, pos - start);
-					if (!e)
-						goto out_err;
-					list_add_last(&mems, &e->link);
-					nr_phdr++;
-				}
-				start = pos + page_size;
-				rv = lseek(mfd, pos + page_size, SEEK_SET);
-				if (rv == -1) {
-					fprintf(stderr, "Error seek %s: %s\n",
-						oldmem, strerror(errno));
-					goto out_err;
-				}
-			} else {
-				fprintf(stderr, "Unable to read %s: %s\n",
-					oldmem, strerror(errno));
-				goto out_err;
-			}
-		} else if (rv == 0)
-			break;
-		pos += page_size;
-		if (((Elf32_Word) ((pos - start) + page_size)) < page_size) {
-			/* Next page will not fit in phdr */
-			e = newmems(start, start, pos - start);
-			if (!e)
-				goto out_err;
-			list_add_last(&mems, &e->link);
-			nr_phdr++;
-			start = pos;
-		}
-	}
-	if (start != pos) {
-		e = newmems(0, start, pos - start);
-		if (!e)
+	for (memr = 0; memr < num_memrange; memr++) {
+		rv = scan_memrange(mfd,
+				   memrange[memr].start, memrange[memr].size,
+				   buf, page_size, oldmem, &mems);
+		if (rv == -1)
 			goto out_err;
-		list_add_last(&mems, &e->link);
-		nr_phdr++;
+		nr_phdr += rv;
 	}
-
 	free(buf);
 	buf = NULL;
 

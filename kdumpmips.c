@@ -38,8 +38,8 @@
 
 #include "elfhnd.h"
 
-#define ENTRIES_PER_PGTAB(d, pgtab_size) \
-	((1 << d->pgd_order) * (1 << d->page_shift) / (pgtab_size))
+#define ENTRIES_PER_PGTAB(d, type, pgtab_size)				\
+	((1 << d->type ##_order) * (1 << d->page_shift) / (pgtab_size))
 
 #define MAX_SHIFT 16
 #define MIN_SHIFT 12
@@ -67,12 +67,14 @@ static uint32_t convle32toh(uint32_t val)
 struct mips_walk_data {
 	struct elfc *pelf;
 	unsigned int page_shift;
+	unsigned int page_size;
 	unsigned int pgd_order;
 	unsigned int pgd_shift;
 	int pmd_present;
 	unsigned int pmd_order;
 	unsigned int pmd_shift;
 	unsigned int pte_order;
+	unsigned int pfn_shift;
 	/* pte_shift is page_shift */
 	uint64_t page_present_mask;
 	int is_64bit;
@@ -80,14 +82,36 @@ struct mips_walk_data {
 	uint64_t (*conv64)(uint64_t val);
 	uint32_t (*conv32)(uint32_t val);
 	uint64_t page_mask;
+
+	uint64_t _text;
+	uint64_t _end;
+	uint64_t phys_to_kernel_offset;
+	int mapped_kernel;
+
+	uint64_t CKSEG0;
+	uint64_t CKSSEG;
+
+	uint64_t PAGE_OFFSET;
+	uint64_t PHYS_OFFSET;
+
+	uint64_t IO_BASE;
 };
+
+static int
+mips_virt_to_phys32(struct mips_walk_data *d, GElf_Addr addr, int offset,
+		     uint32_t vaddr, uint32_t *paddr)
+{
+	/* Convert to a physical address. */
+	*paddr = vaddr - d->PAGE_OFFSET + d->PHYS_OFFSET;
+	return 0;
+}
 
 static int
 handle_32pte(struct mips_walk_data *d, GElf_Addr vaddr, GElf_Addr pteaddr,
 	     handle_page_f handle_page, void *userdata)
 {
 	uint32_t pte[MAX_PGTAB_ENTRIES(sizeof(uint32_t))];
-	int pte_count = ENTRIES_PER_PGTAB(d,  sizeof(uint32_t));
+	int pte_count = ENTRIES_PER_PGTAB(d, pte, sizeof(uint32_t));
 	int i;
 	int rv;
 
@@ -107,7 +131,7 @@ handle_32pte(struct mips_walk_data *d, GElf_Addr vaddr, GElf_Addr pteaddr,
 			continue;
 
 		rv = handle_page(d->pelf,
-				 lpte & d->page_mask,
+				 lpte >> d->pfn_shift << d->page_shift,
 				 vaddr | i << d->page_shift,
 				 1 << d->page_shift, userdata);
 		if (rv == -1)
@@ -121,7 +145,7 @@ handle_32pmd(struct mips_walk_data *d, GElf_Addr vaddr, GElf_Addr pmdaddr,
 	     handle_page_f handle_page, void *userdata)
 {
 	uint32_t pmd[MAX_PGTAB_ENTRIES(sizeof(uint32_t))];
-	int pmd_count = ENTRIES_PER_PGTAB(d,  sizeof(uint32_t));
+	int pmd_count = ENTRIES_PER_PGTAB(d, pmd, sizeof(uint32_t));
 	int i;
 	int rv;
 
@@ -137,12 +161,11 @@ handle_32pmd(struct mips_walk_data *d, GElf_Addr vaddr, GElf_Addr pmdaddr,
 	for (i = 0; i < pmd_count; i++) {
 		uint32_t lpmd = d->conv32(pmd[i]);
 
-		if (!(lpmd & d->page_present_mask))
+		if (mips_virt_to_phys32(d, pmdaddr, i, lpmd, &lpmd) == -1)
 			continue;
 
 		rv = handle_32pte(d, vaddr | i << d->pmd_shift,
-				  lpmd & d->page_mask,
-				  handle_page, userdata);
+				  lpmd, handle_page, userdata);
 		if (rv == -1)
 			return -1;
 	}
@@ -151,12 +174,14 @@ handle_32pmd(struct mips_walk_data *d, GElf_Addr vaddr, GElf_Addr pmdaddr,
 
 static int
 walk_mips32(struct mips_walk_data *d, GElf_Addr pgdaddr,
-	    handle_page_f handle_page, void *userdata)
+	    handle_page_f handle_page, void *userdata,
+	    struct vmcoreinfo_data *vmci)
 {
 	uint32_t pgd[MAX_PGTAB_ENTRIES(sizeof(uint32_t))];
-	int pgd_count = ENTRIES_PER_PGTAB(d,  sizeof(uint32_t));
+	int pgd_count = ENTRIES_PER_PGTAB(d, pgd, sizeof(uint32_t));
 	int i;
 	int rv;
+	GElf_Addr addr, maxaddr;
 
 	if (d->is_bigendian)
 		d->conv32 = convbe32toh;
@@ -168,6 +193,30 @@ walk_mips32(struct mips_walk_data *d, GElf_Addr pgdaddr,
 		d->pgd_shift = d->pmd_shift + (d->pmd_order ? 11 : 10);
 	} else
 		d->pgd_shift = d->page_shift + (d->pte_order ? 11 : 10);
+
+	if (!vmci[5].found) {
+		fprintf(stderr, "PAGE_OFFSET not present in core file\n");
+		return -1;
+	}
+	d->PAGE_OFFSET = vmci[5].val;
+
+	if (!vmci[6].found) {
+		fprintf(stderr, "PYS_OFFSET not present in core file\n");
+		return -1;
+	}
+	d->PHYS_OFFSET = vmci[6].val;
+
+	/*
+	 * Add the direct mapping first.
+	 */
+	maxaddr = elfc_max_paddr(d->pelf);
+	for (addr = 0; addr < maxaddr; addr += d->page_size) {
+		rv = handle_page(d->pelf,
+				 addr, addr + d->PAGE_OFFSET - d->PHYS_OFFSET,
+				 1 << d->page_shift, userdata);
+		if (rv == -1)
+			return -1;
+	}
 
 	rv = elfc_read_pmem(d->pelf, pgdaddr, pgd,
 			    pgd_count * sizeof(uint32_t));
@@ -181,19 +230,49 @@ walk_mips32(struct mips_walk_data *d, GElf_Addr pgdaddr,
 	for (i = 0; i < pgd_count; i++) {
 		uint32_t lpgd = d->conv32(pgd[i]);
 
-		if (!(lpgd & d->page_present_mask))
+		if (mips_virt_to_phys32(d, pgdaddr, i, lpgd, &lpgd) == -1)
 			continue;
 
 		if (d->pmd_present)
 			rv = handle_32pmd(d, i << d->pgd_shift,
-					  lpgd & d->page_mask,
-					  handle_page, userdata);
+					  lpgd, handle_page, userdata);
 		else
 			rv = handle_32pte(d, i << d->pgd_shift,
-					  lpgd & d->page_mask,
-					  handle_page, userdata);
+					  lpgd, handle_page, userdata);
 		if (rv == -1)
 			return -1;
+	}
+	return 0;
+}
+
+static int
+mips_virt_to_phys64(struct mips_walk_data *d, GElf_Addr addr, int offset,
+		     GElf_Addr vaddr, GElf_Addr *paddr)
+{
+	/* Convert to a physical address. */
+	if (d->is_64bit) {
+		if (d->mapped_kernel) {
+			if ((vaddr >= d->_text) && (vaddr < d->_end)) {
+				*paddr = vaddr - d->phys_to_kernel_offset;
+				return 0;
+			}
+		}
+		if (vaddr < d->CKSEG0) {
+			*paddr = vaddr & 0x000000ffffffffffULL;
+			return 0;
+		}
+		if (vaddr < d->CKSSEG) {
+			*paddr = vaddr & 0x1fffffffULL;
+			return 0;
+		}
+
+		fprintf(stderr, "Unknown virtual address type in "
+			"table %llx:%d: %llx\n",
+			(unsigned long long) addr, offset,
+			(unsigned long long) vaddr);
+		return -1;
+	} else {
+		*paddr = vaddr - d->PAGE_OFFSET + d->PHYS_OFFSET;
 	}
 	return 0;
 }
@@ -203,7 +282,7 @@ handle_64pte(struct mips_walk_data *d, GElf_Addr vaddr, GElf_Addr pteaddr,
 	     handle_page_f handle_page, void *userdata)
 {
 	uint64_t pte[MAX_PGTAB_ENTRIES(sizeof(uint64_t))];
-	int pte_count = ENTRIES_PER_PGTAB(d,  sizeof(uint64_t));
+	int pte_count = ENTRIES_PER_PGTAB(d, pte, sizeof(uint64_t));
 	int i;
 	int rv;
 
@@ -223,7 +302,7 @@ handle_64pte(struct mips_walk_data *d, GElf_Addr vaddr, GElf_Addr pteaddr,
 			continue;
 
 		rv = handle_page(d->pelf,
-				 lpte & d->page_mask,
+				 lpte >> d->pfn_shift << d->page_shift,
 				 vaddr | i << d->page_shift,
 				 1 << d->page_shift, userdata);
 		if (rv == -1)
@@ -237,7 +316,7 @@ handle_64pmd(struct mips_walk_data *d, GElf_Addr vaddr, GElf_Addr pmdaddr,
 	     handle_page_f handle_page, void *userdata)
 {
 	uint64_t pmd[MAX_PGTAB_ENTRIES(sizeof(uint64_t))];
-	int pmd_count = ENTRIES_PER_PGTAB(d,  sizeof(uint64_t));
+	int pmd_count = ENTRIES_PER_PGTAB(d, pmd, sizeof(uint64_t));
 	int i;
 	int rv;
 
@@ -251,14 +330,13 @@ handle_64pmd(struct mips_walk_data *d, GElf_Addr vaddr, GElf_Addr pmdaddr,
 	}
 
 	for (i = 0; i < pmd_count; i++) {
-		uint64_t lpmd = d->conv64(pmd[i]);
+		GElf_Addr lpmd = d->conv64(pmd[i]);
 
-		if (!(lpmd & d->page_present_mask))
+		if (mips_virt_to_phys64(d, pmdaddr, i, lpmd, &lpmd) == -1)
 			continue;
 
 		rv = handle_64pte(d, vaddr | i << d->pmd_shift,
-				  lpmd & d->page_mask,
-				  handle_page, userdata);
+				  lpmd, handle_page, userdata);
 		if (rv == -1)
 			return -1;
 	}
@@ -267,17 +345,78 @@ handle_64pmd(struct mips_walk_data *d, GElf_Addr vaddr, GElf_Addr pmdaddr,
 
 static int
 walk_mips64(struct mips_walk_data *d, GElf_Addr pgdaddr,
-	    handle_page_f handle_page, void *userdata)
+	    handle_page_f handle_page, void *userdata,
+	    struct vmcoreinfo_data *vmci)
 {
 	uint64_t pgd[MAX_PGTAB_ENTRIES(sizeof(uint64_t))];
-	int pgd_count = ENTRIES_PER_PGTAB(d,  sizeof(uint64_t));
+	int pgd_count = ENTRIES_PER_PGTAB(d, pgd, sizeof(uint64_t));
 	int i;
 	int rv;
+	GElf_Addr addr, maxaddr;
 
 	if (d->is_bigendian)
 		d->conv64 = convbe64toh;
 	else
 		d->conv64 = convle64toh;
+
+	if (vmci[0].found || vmci[1].found || vmci[2].found) {
+		if (!(vmci[0].found && vmci[1].found & vmci[2].found)) {
+			fprintf(stderr, "All of _text, _end, and"
+				" phys_to_kernel_offset not present\n");
+			return -1;
+		}
+		d->_text = vmci[0].val;
+		d->_end = vmci[1].val;
+		d->phys_to_kernel_offset = vmci[2].val;
+		d->mapped_kernel = 1;
+	} else
+		d->mapped_kernel = 0;
+
+	if (!vmci[3].found) {
+		fprintf(stderr, "CKSEG0 not present in core file\n");
+		return -1;
+	}
+	d->CKSEG0 = vmci[3].val;
+
+	if (!vmci[4].found) {
+		fprintf(stderr, "CKSSEG not present in core file\n");
+		return -1;
+	}
+	d->CKSSEG = vmci[4].val;
+
+	/*
+	 * Add the default page tables for iomem and kernel.
+	 * This is ioremap addresses and the kernel address space.
+	 * MIPS uses hardwired TLBs for some of these, and some are
+	 * intrinsic to processors.
+	 */
+	if (d->mapped_kernel) {
+		for (addr = d->_text; addr < d->_end; addr += d->page_size) {
+			rv = handle_page(d->pelf,
+					 addr - d->phys_to_kernel_offset,
+					 addr,
+					 1 << d->page_shift, userdata);
+			if (rv == -1)
+				return -1;
+		}
+	}
+	maxaddr = elfc_max_paddr(d->pelf);
+	for (addr = 0; addr < maxaddr; addr += d->page_size) {
+		rv = handle_page(d->pelf,
+				 addr, addr + d->IO_BASE,
+				 1 << d->page_shift, userdata);
+		if (rv == -1)
+			return -1;
+	}
+	if (maxaddr > 0x20000000)
+		maxaddr = 0x20000000;
+	for (addr = 0; addr < maxaddr; addr += d->page_size) {
+		rv = handle_page(d->pelf,
+				 addr, addr + d->CKSEG0,
+				 1 << d->page_shift, userdata);
+		if (rv == -1)
+			return -1;
+	}
 
 	if (d->pmd_present) {
 		d->pmd_shift = d->page_shift + (d->pte_order ? 10 : 9);
@@ -296,19 +435,17 @@ walk_mips64(struct mips_walk_data *d, GElf_Addr pgdaddr,
 	}
 
 	for (i = 0; i < pgd_count; i++) {
-		uint64_t lpgd = d->conv64(pgd[i]);
+		GElf_Addr lpgd = d->conv64(pgd[i]);
 
-		if (!(lpgd & d->page_present_mask))
+		if (mips_virt_to_phys64(d, pgdaddr, i, lpgd, &lpgd) == -1)
 			continue;
 
 		if (d->pmd_present)
 			rv = handle_64pmd(d, i << d->pgd_shift,
-					  lpgd & d->page_mask,
-					  handle_page, userdata);
+					  lpgd, handle_page, userdata);
 		else
 			rv = handle_64pte(d, i << d->pgd_shift,
-					  lpgd & d->page_mask,
-					  handle_page, userdata);
+					  lpgd, handle_page, userdata);
 		if (rv == -1)
 			return -1;
 	}
@@ -323,16 +460,27 @@ mips_walk(struct elfc *pelf, GElf_Addr pgd,
 	int i;
 	int rv;
 	struct vmcoreinfo_data vmci[] = {
-		{ "NUMBER(PMD_ORDER)=", 10 }, /* Optional */
-		{ "NUMBER(PAGE_SHIFT)=", 10 },
-		{ "NUMBER(PGD_ORDER)=", 10 },
-		{ "NUMBER(PTE_ORDER)=", 10 },
-		{ "NUMBER(_PAGE_PRESENT)=", 10 },
+		{ "ADDRESS(_text)", 16 },			/* 0 */
+		{ "ADDRESS(_end)", 16 },
+		{ "ADDRESS(_phys_to_kernel_offset)", 16 },
+		{ "ADDRESS(CKSEG0)", 16 },
+		{ "ADDRESS(CKSSEG)", 16 },
+		{ "ADDRESS(PAGE_OFFSET)", 16 },			/* 5 */
+		{ "ADDRESS(PHYS_OFFSET)", 16 },
+		{ "NUMBER(PMD_ORDER)", 10 }, /* Optional here and above */
+		{ "NUMBER(PAGE_SHIFT)", 10 },
+		{ "NUMBER(PGD_ORDER)", 10 },
+		{ "NUMBER(PTE_ORDER)", 10 },			/* 10 */
+		{ "NUMBER(_PAGE_PRESENT)", 10 },
+		{ "NUMBER(_PAGE_HUGE)", 10 },
+		{ "ADDRESS(IO_BASE)", 16 },
+		{ "NUMBER(_PFN_SHIFT)", 10 },
 		{ NULL }
 	};
+#define VREQ 8 /* First required item */
 
 	handle_vminfo_notes(pelf, vmci);
-	for (i = 1; vmci[i].name; i++) { 
+	for (i = VREQ; vmci[i].name; i++) { 
 		if (!vmci[i].found) {
 			fprintf(stderr, "%s not present in input file notes, "
 				"it is required for operation\n", vmci[i].name);
@@ -341,45 +489,49 @@ mips_walk(struct elfc *pelf, GElf_Addr pgd,
 	}
 
 	d->pelf = pelf;
-	d->page_shift = vmci[1].val;
-	d->pgd_order = vmci[2].val;
-	d->pmd_present = vmci[0].found;
-	d->pmd_order = vmci[0].val;
-	d->pte_order = vmci[3].val;
-	d->page_present_mask = vmci[4].val;
+	d->page_shift = vmci[VREQ + 0].val;
+	d->page_size = (1 << d->page_shift);
+	d->pgd_order = vmci[VREQ + 1].val;
+	d->pte_order = vmci[VREQ + 2].val;
+	d->page_present_mask = vmci[VREQ + 3].val;
+	d->IO_BASE = vmci[VREQ + 5].val;
+	d->pfn_shift = vmci[VREQ + 6].val;
 	d->is_64bit = elfc_getclass(pelf) == ELFCLASS64;
 	d->is_bigendian = elfc_getencoding(pelf) == ELFDATA2MSB;
 
+	d->pmd_present = vmci[7].found;
+	d->pmd_order = vmci[7].val;
+
 	if (d->pgd_order > MAX_ORDER) {
-		fprintf(stderr, "pgd_order is %d, only 0 or 1 are supported.",
+		fprintf(stderr, "pgd_order is %d, only 0 or 1 are supported.\n",
 			d->pgd_order);
 		return -1;
 	}
 
 	if (d->pmd_present && d->pmd_order > MAX_ORDER) {
-		fprintf(stderr, "pmd_order is %d, only 0 or 1 are supported.",
+		fprintf(stderr, "pmd_order is %d, only 0 or 1 are supported.\n",
 			d->pmd_order);
 		return -1;
 	}
 
 	if (d->pte_order > MAX_ORDER) {
-		fprintf(stderr, "pte_order is %d, only 0 or 1 are supported.",
+		fprintf(stderr, "pte_order is %d, only 0 or 1 are supported.\n",
 			d->pte_order);
 		return -1;
 	}
 
 	if ((d->page_shift > MAX_SHIFT) || (d->page_shift < MIN_SHIFT)) {
-		fprintf(stderr, "page_shift is %d, only %d-%d are supported.",
+		fprintf(stderr, "page_shift is %d, only %d-%d are supported.\n",
 			d->page_shift, MIN_SHIFT, MAX_SHIFT);
 		return -1;
 	}
 
-	d->page_mask = ~((uint64_t) (1 << d->page_shift) - 1);
+	d->page_mask = ~((uint64_t) (d->page_size - 1));
 
 	if (d->is_64bit)
-		rv = walk_mips64(d, pgd, handle_page, userdata);
+		rv = walk_mips64(d, pgd, handle_page, userdata, vmci);
 	else
-		rv = walk_mips32(d, pgd, handle_page, userdata);
+		rv = walk_mips32(d, pgd, handle_page, userdata, vmci);
 
 	return rv;
 }

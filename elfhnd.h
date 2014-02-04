@@ -389,6 +389,19 @@ int elfc_write_pmem(struct elfc *e, GElf_Addr addr,
 		    const void *odata, size_t len);
 
 /*
+ * Returns TRUE if the given address is present in the elf file,
+ * false if not.
+ */
+int elfc_pmem_present(struct elfc *e, GElf_Addr addr, size_t len);
+int elfc_vmem_present(struct elfc *e, GElf_Addr addr, size_t len);
+
+/*
+ * Get one past the maximum valid physical/virtual address
+ */
+GElf_Addr elfc_max_paddr(struct elfc *e);
+GElf_Addr elfc_max_vaddr(struct elfc *e);
+
+/*
  * Return the Phdr number and offset from the beginning of the Phdr
  * for the given virtual address and length.
  */

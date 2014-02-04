@@ -95,7 +95,7 @@ struct elfc {
 
 static int elfc_read_notes(struct elfc *e);
 
-#define Phdr_Entries \
+#define Phdr32_Entries \
 	PhdrE(Word,	type);		\
 	PhdrE(Off,	offset);	\
 	PhdrE(Addr,	vaddr);		\
@@ -104,6 +104,16 @@ static int elfc_read_notes(struct elfc *e);
 	PhdrE(Word,	memsz);		\
 	PhdrE(Word,	flags);		\
 	PhdrE(Word,	align);
+
+#define Phdr64_Entries \
+	PhdrE(Word,	type);		\
+	PhdrE(Off,	offset);	\
+	PhdrE(Addr,	vaddr);		\
+	PhdrE(Addr,	paddr);		\
+	PhdrE(Xword,	filesz);	\
+	PhdrE(Xword,	memsz);		\
+	PhdrE(Word,	flags);		\
+	PhdrE(Xword,	align);
 
 static int
 extend_phdrs(struct elfc *e)
@@ -147,7 +157,7 @@ elfc_insert_phdr(struct elfc *e, int pnum,
 	memset(e->phdrs + pnum, 0, sizeof(*e->phdrs));
 
 #define PhdrE(type, name) e->phdrs[pnum].p.p_ ## name = name;
-	Phdr_Entries;
+	Phdr64_Entries;
 #undef PhdrE
 	e->num_phdrs++;
 	return pnum;
@@ -167,7 +177,7 @@ elfc_add_phdr(struct elfc *e,
 	i = e->num_phdrs;
 	memset(&e->phdrs[i], 0, sizeof(e->phdrs[i]));
 #define PhdrE(type, name) e->phdrs[i].p.p_ ## name = name;
-	Phdr_Entries;
+	Phdr64_Entries;
 #undef PhdrE
 	e->num_phdrs++;
 	return i;
@@ -607,6 +617,8 @@ elfc_getencoding(struct elfc *e)
 static int elfarch = 
 #ifdef __x86_64__
 	EM_X86_64
+#elif defined(__mips__)
+	EM_MIPS
 #else
 	EM_NONE
 #endif
@@ -853,6 +865,58 @@ elfc_pmem_offset(struct elfc *e, GElf_Addr addr, size_t len,
 	}
 	e->eerrno = ENOENT;
 	return -1;
+}
+
+int
+elfc_pmem_present(struct elfc *e, GElf_Addr addr, size_t len)
+{
+	GElf_Off off;
+	int pnum;
+
+	if (elfc_pmem_offset(e, addr, len, &pnum, &off) == -1)
+		return 0;
+	return 1;
+}
+
+int
+elfc_vmem_present(struct elfc *e, GElf_Addr addr, size_t len)
+{
+	GElf_Off off;
+	int pnum;
+
+	if (elfc_vmem_offset(e, addr, len, &pnum, &off) == -1)
+		return 0;
+	return 1;
+}
+
+GElf_Addr
+elfc_max_paddr(struct elfc *e)
+{
+	int i;
+	GElf_Addr max = 0;
+	GElf_Addr s_end;
+
+	for (i = 0; i < e->num_phdrs; i++) {
+		s_end = e->phdrs[i].p.p_paddr + e->phdrs[i].p.p_filesz;
+		if (max < s_end)
+			max = s_end;
+	}
+	return max;
+}
+
+GElf_Addr
+elfc_max_vaddr(struct elfc *e)
+{
+	int i;
+	GElf_Addr max = 0;
+	GElf_Addr s_end;
+
+	for (i = 0; i < e->num_phdrs; i++) {
+		s_end = e->phdrs[i].p.p_vaddr + e->phdrs[i].p.p_filesz;
+		if (max < s_end)
+			max = s_end;
+	}
+	return max;
 }
 
 int
@@ -1364,7 +1428,7 @@ write_elf32_phdrs(struct elfc *e)
 	for (i = 0; i < e->num_phdrs; i++) {
 #define PhdrE(type, name) p32[i].p_ ## name = \
 	elfc_put ## type(e, e->phdrs[i].p.p_ ## name)
-		Phdr_Entries;
+		Phdr32_Entries;
 #undef PhdrE
 	}
 	rv = write(e->fd, p32, l);
@@ -1396,7 +1460,7 @@ write_elf64_phdrs(struct elfc *e)
 	for (i = 0; i < e->num_phdrs; i++) {
 #define PhdrE(type, name) p64[i].p_ ## name = \
 	elfc_put ## type(e, e->phdrs[i].p.p_ ## name)
-		Phdr_Entries;
+		Phdr64_Entries;
 #undef PhdrE
 	}
 	rv = write(e->fd, p64, l);
@@ -1445,7 +1509,7 @@ read_elf32_phdrs(struct elfc *e, char *buf)
 				   (buf + (i * e->hdr.e_phentsize)));;
 #define PhdrE(type, name) e->phdrs[i].p.p_ ## name = \
 	elfc_get ## type(e, p32->p_ ## name)
-		Phdr_Entries;
+		Phdr32_Entries;
 #undef PhdrE
 	}
 
@@ -1477,7 +1541,7 @@ read_elf64_phdrs(struct elfc *e, char *buf)
 
 #define PhdrE(type, name) e->phdrs[i].p.p_ ## name = \
 	elfc_get ## type(e, p64->p_ ## name)
-		Phdr_Entries;
+		Phdr64_Entries;
 #undef PhdrE
 	}
 
@@ -1831,8 +1895,10 @@ elfc_write(struct elfc *e)
 			rv = e->phdrs[i].do_write(e, e->fd, &e->phdrs[i].p,
 						  e->phdrs[i].data,
 						  e->phdrs[i].userdata);
-			if (rv == -1)
+			if (rv == -1) {
+				e->eerrno = errno;
 				goto out;
+			}
 		}
 	}
 

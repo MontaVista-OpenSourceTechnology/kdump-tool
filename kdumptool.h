@@ -68,7 +68,17 @@ struct vmcoreinfo_data {
 	uint64_t val;
 };
 int handle_vminfo_notes(struct elfc *elf, struct vmcoreinfo_data *vals);
-#define VMINFO_YN_BASE	-1
+#define VMINFO_YN_BASE		-1
+
+/*
+ * Search for, and call handler on, every instance of the given entry
+ * name in the vmcoreinfo note.
+ */
+int find_vmcore_entries(struct elfc *elf, const char *entry,
+			int (*handler)(const char *name, const char *str,
+				       int strlen, void *userdata),
+			void *userdata);
+
 
 typedef int (*handle_page_f)(struct elfc *pelf,
 			     GElf_Addr paddr,
