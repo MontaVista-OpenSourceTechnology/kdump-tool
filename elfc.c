@@ -1,5 +1,5 @@
 /*
- * elfhnd.c
+ * elfc.c
  *
  * ELF file handling
  *
@@ -44,7 +44,7 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 
-#include "elfhnd.h"
+#include "elfc.h"
 
 #define elfc_align(v, a) (((v) + (a) - 1) & ~((typeof(v)) (a - 1)))
 
@@ -661,37 +661,65 @@ elfc_getput(Xword, 64)
 static GElf_Addr
 elfc_getAddr(struct elfc *e, GElf_Addr w)
 {
-	if (e->hdr.e_ident[EI_DATA] == ELFDATA2LSB)
-		return elfc_getXword(e, w);
-	else
-		return elfc_getXword(e, w);
+	if (e->hdr.e_ident[EI_CLASS] == ELFCLASS32) {
+		if (e->hdr.e_ident[EI_DATA] == ELFDATA2LSB)
+			return elfc_getWord(e, w);
+		else
+			return elfc_getWord(e, w);
+	} else {
+		if (e->hdr.e_ident[EI_DATA] == ELFDATA2LSB)
+			return elfc_getXword(e, w);
+		else
+			return elfc_getXword(e, w);
+	}
 }
 
 static GElf_Off
 elfc_getOff(struct elfc *e, GElf_Off w)
 {
-	if (e->hdr.e_ident[EI_DATA] == ELFDATA2LSB)
-		return elfc_getXword(e, w);
-	else
-		return elfc_getXword(e, w);
+	if (e->hdr.e_ident[EI_CLASS] == ELFCLASS32) {
+		if (e->hdr.e_ident[EI_DATA] == ELFDATA2LSB)
+			return elfc_getWord(e, w);
+		else
+			return elfc_getWord(e, w);
+	} else {
+		if (e->hdr.e_ident[EI_DATA] == ELFDATA2LSB)
+			return elfc_getXword(e, w);
+		else
+			return elfc_getXword(e, w);
+	}
 }
 
 static GElf_Addr
 elfc_putAddr(struct elfc *e, GElf_Addr w)
 {
-	if (e->hdr.e_ident[EI_DATA] == ELFDATA2LSB)
-		return elfc_putXword(e, w);
-	else
-		return elfc_putXword(e, w);
+	if (e->hdr.e_ident[EI_CLASS] == ELFCLASS32) {
+		if (e->hdr.e_ident[EI_DATA] == ELFDATA2LSB)
+			return elfc_putWord(e, w);
+		else
+			return elfc_putWord(e, w);
+	} else {
+		if (e->hdr.e_ident[EI_DATA] == ELFDATA2LSB)
+			return elfc_putXword(e, w);
+		else
+			return elfc_putXword(e, w);
+	}
 }
 
 static GElf_Off
 elfc_putOff(struct elfc *e, GElf_Off w)
 {
-	if (e->hdr.e_ident[EI_DATA] == ELFDATA2LSB)
-		return elfc_putXword(e, w);
-	else
-		return elfc_putXword(e, w);
+	if (e->hdr.e_ident[EI_CLASS] == ELFCLASS32) {
+		if (e->hdr.e_ident[EI_DATA] == ELFDATA2LSB)
+			return elfc_putWord(e, w);
+		else
+			return elfc_putWord(e, w);
+	} else {
+		if (e->hdr.e_ident[EI_DATA] == ELFDATA2LSB)
+			return elfc_putXword(e, w);
+		else
+			return elfc_putXword(e, w);
+	}
 }
 
 int

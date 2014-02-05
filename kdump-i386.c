@@ -1,5 +1,5 @@
 /*
- * kdumpi386.c
+ * kdump-i386.c
  *
  * x86 specific code for handling coredumps
  *
@@ -31,12 +31,12 @@
  *  Software Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
-#include "kdumptool.h"
+#include "kdump-tool.h"
 #include <stdio.h>
 #include <string.h>
 #include <endian.h>
 
-#include "elfhnd.h"
+#include "elfc.h"
 
 #define PHYSADDRMASK_4K 0xfffff000
 #define PAGESHIFT_4K	12

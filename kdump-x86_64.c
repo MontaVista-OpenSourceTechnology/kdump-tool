@@ -1,5 +1,5 @@
 /*
- * kdumpx86_64.c
+ * kdump-x86_64.c
  *
  * x86_64 specific code for handling coredumps
  *
@@ -31,12 +31,12 @@
  *  Software Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
-#include "kdumptool.h"
+#include "kdump-tool.h"
 #include <stdio.h>
 #include <string.h>
 #include <endian.h>
 
-#include "elfhnd.h"
+#include "elfc.h"
 
 #define PHYSADDRMASK_4K 0x0000fffffffff000
 #define PAGESHIFT_4K	12

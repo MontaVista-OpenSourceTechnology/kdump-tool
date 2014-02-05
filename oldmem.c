@@ -1,7 +1,7 @@
 /*
  * oldmem.c
  *
- * Handling for reading /dev/oldmem and /proc/vmcore into an elf format
+ * Handling for reading /dev/mem and /proc/vmcore into an elf format
  *
  * Author: MontaVista Software, Inc.
  *         Corey Minyard <minyard@mvista.com>
@@ -31,7 +31,7 @@
  *  Software Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
-#include "kdumptool.h"
+#include "kdump-tool.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -41,9 +41,12 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <string.h>
+#include <setjmp.h>
+#include <sys/mman.h>
+#include <signal.h>
 
 #include "list.h"
-#include "elfhnd.h"
+#include "elfc.h"
 
 struct mementry {
 	struct link link;
@@ -66,8 +69,12 @@ newmems(GElf_Addr vaddr, GElf_Addr paddr, GElf_Addr size)
 	return e;
 }
 
+#define MAP_SIZE 1024 * 1024
+
 struct fdio_data {
 	int fd;
+	int local_pgsize;
+	int target_pgsize;
 };
 
 static int
@@ -76,11 +83,49 @@ fdio_do_write(struct elfc *e, int fd, GElf_Phdr *phdr,
 {
 	struct fdio_data *d = userdata;
 	int rv;
+	char *map;
+	off_t loff = 0;
+	off_t pos;
+	off_t mapsize;
+	int lerrno;
 
-	rv = lseek(d->fd, phdr->p_paddr, SEEK_SET);
-	if (rv == -1)
+	/*
+	 * Align on a page size and get the offset from there.
+	 */
+	pos = phdr->p_paddr;
+	loff = pos - (pos & ~((off_t) d->local_pgsize - 1));
+	pos -= loff;
+	mapsize = phdr->p_filesz;
+
+	/*
+	 * Copy in sections.
+	 */
+	while ((mapsize + loff) > MAP_SIZE) {
+		map = mmap(NULL, MAP_SIZE, PROT_READ, MAP_SHARED, d->fd, pos);
+		if (map == MAP_FAILED)
+			return -1;
+		rv = write(fd, map + loff, MAP_SIZE - loff);
+		lerrno = errno;
+		munmap(map, MAP_SIZE);
+		if (rv == -1) {
+			errno = lerrno;
+			return -1;
+		}
+		mapsize -= MAP_SIZE - loff;
+		pos += MAP_SIZE;
+		loff = 0;
+	}
+	map = mmap(NULL, mapsize + loff, PROT_READ, MAP_SHARED, d->fd, pos);
+	if (map == MAP_FAILED)
 		return -1;
-	return elfc_copy_fd_range(fd, d->fd, phdr->p_filesz);
+	rv = write(fd, map + loff, mapsize);
+	lerrno = errno;
+	munmap(map, mapsize + loff);
+	if (rv == -1) {
+		errno = lerrno;
+		return -1;
+	}
+	return 0;
 }
 
 static int
@@ -89,20 +134,44 @@ fdio_get_data(struct elfc *e, GElf_Phdr *phdr, void *data,
 	      void *userdata)
 {
 	struct fdio_data *d = userdata;
-	int rv;
+	char *map;
+	off_t loff = 0;
+	off_t pos;
+	off_t mapsize;
+	char *wdata = odata;
 
 	if ((off > phdr->p_filesz) || ((off + len) > phdr->p_filesz)) {
 		errno = EINVAL;
 		return -1;
 	}
 
-	rv = lseek(d->fd, phdr->p_paddr + off, SEEK_SET);
-	if (rv == -1)
-		return -1;
+	/*
+	 * Align on a page size and get the offset from there.
+	 */
+	pos = phdr->p_paddr + off;
+	loff = pos - (pos & ~((off_t) d->local_pgsize - 1));
+	pos -= loff;
+	mapsize = len + loff;
 
-	rv = read(d->fd, odata, len);
-	if (rv == -1)
+	/*
+	 * Copy in sections.
+	 */
+	while ((mapsize + loff) > MAP_SIZE) {
+		map = mmap(NULL, MAP_SIZE, PROT_READ, MAP_SHARED, d->fd, pos);
+		if (map == MAP_FAILED)
+			return -1;
+		memcpy(wdata, map + loff, MAP_SIZE - loff);
+		munmap(map, MAP_SIZE);
+		mapsize -= MAP_SIZE - loff;
+		wdata += MAP_SIZE - loff;
+		pos += MAP_SIZE;
+		loff = 0;
+	}
+	map = mmap(NULL, mapsize + loff, PROT_READ, MAP_SHARED, d->fd, pos);
+	if (map == MAP_FAILED)
 		return -1;
+	memcpy(wdata, map + loff, mapsize);
+	munmap(map, mapsize + loff);
 	return 0;
 }
 
@@ -111,22 +180,7 @@ fdio_set_data(struct elfc *e, GElf_Phdr *phdr, void *data,
 	      GElf_Off off, const void *idata, size_t len,
 	      void *userdata)
 {
-	struct fdio_data *d = userdata;
-	int rv;
-
-	if ((off > phdr->p_filesz) || ((off + len) > phdr->p_filesz)) {
-		errno = EINVAL;
-		return -1;
-	}
-
-	rv = lseek(d->fd, phdr->p_paddr + off, SEEK_SET);
-	if (rv == -1)
-		return -1;
-
-	rv = write(d->fd, idata, len);
-	if (rv == -1)
-		return -1;
-	return 0;
+	return -1;
 }
 
 struct memrange {
@@ -183,6 +237,14 @@ out_err:
 	return -1;
 }
 
+static sigjmp_buf acc_err_jump;
+static void
+acc_err_hnd(int sig)
+{
+	siglongjmp(acc_err_jump, 1);
+}
+static char dummy_buf;
+
 static int
 scan_memrange(int mfd, uint64_t rangestart, uint64_t rangesize,
 	      unsigned char *buf, int page_size, const char *oldmem,
@@ -193,37 +255,45 @@ scan_memrange(int mfd, uint64_t rangestart, uint64_t rangesize,
 	int nr_phdr = 0;
 	struct mementry *e;
 	int rv;
+	char *map;
+	struct sigaction act, oldsegv, oldbus;
 
-	if (lseek(mfd, start, SEEK_SET) == -1) {
-		fprintf(stderr, "Seek error in %s: %s\n",
-			oldmem, strerror(errno));
+	memset(&act, 0, sizeof(act));
+	act.sa_handler = acc_err_hnd;
+	rv = sigaction(SIGSEGV, &act, &oldsegv);
+	if (rv == -1) {
+		fprintf(stderr, "Unable to set up signal handler: %s\n",
+			strerror(errno));
 		return -1;
 	}
-	while (pos <= (rangestart + rangesize)) {
-		rv = read(mfd, buf, page_size);
-		if (rv == -1) {
-			if (errno == ENOMEM) {
-				if (start != pos) {
-					e = newmems(0, start, pos - start);
-					if (!e)
-						goto out_err;
-					list_add_last(mems, &e->link);
-					nr_phdr++;
-				}
-				start = pos + page_size;
-				rv = lseek(mfd, pos + page_size, SEEK_SET);
-				if (rv == -1) {
-					fprintf(stderr, "Error seek %s: %s\n",
-						oldmem, strerror(errno));
+	rv = sigaction(SIGBUS, &act, &oldbus);
+	if (rv == -1) {
+		fprintf(stderr, "Unable to set up signal handler: %s\n",
+			strerror(errno));
+		nr_phdr = -1;
+		goto out_set_segv;
+	}
+	while (pos < (rangestart + rangesize)) {
+		map = mmap(NULL, page_size, PROT_READ, MAP_SHARED, mfd, pos);
+		if (sigsetjmp(acc_err_jump, 0) || map == MAP_FAILED) {
+			if (start != pos) {
+				e = newmems(0, start, pos - start);
+				if (!e) {
+					if (map != MAP_FAILED)
+						munmap(map, page_size);
 					goto out_err;
 				}
-			} else {
-				fprintf(stderr, "Unable to read %s: %s\n",
-					oldmem, strerror(errno));
-				goto out_err;
+				list_add_last(mems, &e->link);
+				nr_phdr++;
 			}
-		} else if (rv == 0)
-			break;
+			start = pos + page_size;
+		} else {
+			/* Make sure we can access the memory */
+			dummy_buf = *map;
+		}
+		if (map != MAP_FAILED)
+			munmap(map, page_size);
+
 		pos += page_size;
 		if (((Elf32_Word) ((pos - start) + page_size)) < page_size) {
 			/* Next page will not fit in phdr */
@@ -242,10 +312,16 @@ scan_memrange(int mfd, uint64_t rangestart, uint64_t rangesize,
 		list_add_last(mems, &e->link);
 		nr_phdr++;
 	}
+
+out:
+	sigaction(SIGSEGV, &oldbus, NULL);
+out_set_segv:
+	sigaction(SIGSEGV, &oldsegv, NULL);
 	return nr_phdr;
 
 out_err:
-	return -1;
+	nr_phdr = -1;
+	goto out;
 }
 
 struct elfc *
@@ -383,6 +459,8 @@ read_oldmem(char *oldmem, char *vmcore)
 			goto out_err;
 		}
 		fdio_data->fd = mfd;
+		fdio_data->local_pgsize = sysconf(_SC_PAGE_SIZE);
+		fdio_data->target_pgsize = page_size;
 		
 		rv = elfc_set_phdr_data(elf, rv, NULL, elfc_gen_phdr_free,
 					NULL, fdio_do_write, NULL,

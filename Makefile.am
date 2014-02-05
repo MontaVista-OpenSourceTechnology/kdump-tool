@@ -1,9 +1,8 @@
-bin_PROGRAMS = kdumptool
+bin_PROGRAMS = kdump-tool
 ACLOCAL_AMFLAGS = -I m4
 AM_CFLAGS=-Wall
-kdumptool_SOURCES = elfhnd.c kdumptool.c list.c oldmem.c \
-	kdumpx86_64.c kdumpi386.c kdumpmips.c
-noinst_HEADERS = elfhnd.h kdumptool.h list.h
-man_MANS = kdumptool.1
-EXTRA_DIST = 
-
+kdump_tool_SOURCES = elfc.c kdump-tool.c list.c oldmem.c \
+	kdump-x86_64.c kdump-i386.c kdump-mips.c kdump-arm.c
+noinst_HEADERS = elfc.h kdump-tool.h list.h
+man_MANS = kdump-tool.1
+EXTRA_DIST = $(man_MANS)

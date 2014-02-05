@@ -1,5 +1,5 @@
 /*
- * kdumptool.c
+ * kdump-tool.c
  *
  * Tool for extracting and handling coredumps
  *
@@ -32,7 +32,7 @@
  */
 
 /* Must be first */
-#include "kdumptool.h"
+#include "kdump-tool.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -46,11 +46,12 @@
 #include <stdarg.h>
 
 #include "list.h"
-#include "elfhnd.h"
+#include "elfc.h"
 
 const char *progname;
 const char *subcmd;
 
+#define DEFAULT_OLDMEM "/dev/mem"
 void
 subcmd_usage(const char *error, ...)
 {
@@ -264,7 +265,7 @@ static int
 topelf(int argc, char *argv[])
 {
 	char *outfile = NULL;
-	char *oldmem = "/dev/oldmem";
+	char *oldmem = DEFAULT_OLDMEM;
 	char *vmcore = "/proc/vmcore";
 	static const struct option longopts[] = {
 		{ "help",	no_argument,		NULL, 'h' },
@@ -275,7 +276,7 @@ topelf(int argc, char *argv[])
 	};
 	static const char *helpstr[] = {
 		"This info",
-		"File to use instead of /dev/oldmem",
+		"File to use instead of /dev/mem",
 		"File send output to",
 		"The vmcore file, defaults to /proc/vmcore",
 		NULL
@@ -550,7 +551,7 @@ tovelf(int argc, char *argv[])
 	};
 	static const char *helpstr[] = {
 		"This info",
-		"The input file, defaults to /dev/oldmem if intype is oldmem, "
+		"The input file, defaults to /dev/mem if intype is oldmem, "
 		"otherwise required",
 		"File send output to",
 		"The vmcore file, defaults to /proc/vmcore, only for oldmem",
@@ -624,7 +625,7 @@ tovelf(int argc, char *argv[])
 
 	if (do_oldmem) {
 		if (!infile)
-			infile = "/dev/oldmem";
+			infile = DEFAULT_OLDMEM;
 		elf = read_oldmem(infile, vmcore);
 		if (!elf)
 			goto out_err;
@@ -789,7 +790,7 @@ dumpmem(int argc, char *argv[])
 	};
 	static const char *helpstr[] = {
 		"This info",
-		"The input file, defaults to /dev/oldmem if intype is oldmem, "
+		"The input file, defaults to /dev/mem if intype is oldmem, "
 		"otherwise required",
 		"The vmcore file, defaults to /proc/vmcore, only for oldmem",
 		"The file type, either pelf or oldmem, defaults to pelf",
@@ -874,7 +875,7 @@ dumpmem(int argc, char *argv[])
 
 	if (do_oldmem) {
 		if (!infile)
-			infile = "/dev/oldmem";
+			infile = DEFAULT_OLDMEM;
 		elf = read_oldmem(infile, vmcore);
 		if (!elf)
 			goto out_err;
@@ -959,9 +960,9 @@ struct {
 	int (*handler)(int argc, char *argv[]);
 	const char *help;
 } subcommands[] = {
-	{ "topelf", topelf, "Convert /dev/oldmem to a physical "
+	{ "topelf", topelf, "Convert /dev/mem to a physical "
 	  "elf file" },
-	{ "tovelf", tovelf, "Convert /dev/oldmem or a pelf file to a "
+	{ "tovelf", tovelf, "Convert /dev/mem or a pelf file to a "
 	  "virtual elf file" },
 	{ "dumpmem", dumpmem, "Dump raw memory in an elf or oldmem file" },
 	{ NULL }
@@ -1027,6 +1028,7 @@ main(int argc, char *argv[])
 	add_arch(&x86_64_arch);
 	add_arch(&i386_arch);
 	add_arch(&mips_arch);
+	add_arch(&arm_arch);
 
 	for (i = 0; subcommands[i].name; i++) {
 		if (strcmp(subcommands[i].name, argv[optind]) == 0)

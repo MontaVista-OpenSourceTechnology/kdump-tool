@@ -1,5 +1,5 @@
 /*
- * kdumpmips.c
+ * kdump-mips.c
  *
  * MIPS specific code for handling coredumps
  *
@@ -31,12 +31,12 @@
  *  Software Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
-#include "kdumptool.h"
+#include "kdump-tool.h"
 #include <stdio.h>
 #include <string.h>
 #include <endian.h>
 
-#include "elfhnd.h"
+#include "elfc.h"
 
 #define ENTRIES_PER_PGTAB(d, type, pgtab_size)				\
 	((1 << d->type ##_order) * (1 << d->page_shift) / (pgtab_size))
