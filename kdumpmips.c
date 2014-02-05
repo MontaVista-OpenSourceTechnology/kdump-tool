@@ -1,7 +1,7 @@
 /*
- * kdumpx86_64.c
+ * kdumpmips.c
  *
- * x86_64 specific code for handling coredumps
+ * MIPS specific code for handling coredumps
  *
  * Author: MontaVista Software, Inc.
  *         Corey Minyard <minyard@mvista.com>
@@ -87,6 +87,8 @@ struct mips_walk_data {
 	uint64_t _end;
 	uint64_t phys_to_kernel_offset;
 	int mapped_kernel;
+
+	uint64_t _PAGE_HUGE;
 
 	uint64_t CKSEG0;
 	uint64_t CKSSEG;
@@ -332,6 +334,14 @@ handle_64pmd(struct mips_walk_data *d, GElf_Addr vaddr, GElf_Addr pmdaddr,
 	for (i = 0; i < pmd_count; i++) {
 		GElf_Addr lpmd = d->conv64(pmd[i]);
 
+		if ((lpmd & d->_PAGE_HUGE) && (lpmd & d->page_present_mask)) {
+			rv = handle_page(d->pelf,
+					 lpmd >> d->pfn_shift << d->page_shift,
+					 vaddr | i << d->pmd_shift,
+					 1 << d->pmd_shift, userdata);
+			if (rv == -1)
+				return -1;
+		}
 		if (mips_virt_to_phys64(d, pmdaddr, i, lpmd, &lpmd) == -1)
 			continue;
 
@@ -460,24 +470,25 @@ mips_walk(struct elfc *pelf, GElf_Addr pgd,
 	int i;
 	int rv;
 	struct vmcoreinfo_data vmci[] = {
-		{ "ADDRESS(_text)", 16 },			/* 0 */
-		{ "ADDRESS(_end)", 16 },
-		{ "ADDRESS(_phys_to_kernel_offset)", 16 },
-		{ "ADDRESS(CKSEG0)", 16 },
-		{ "ADDRESS(CKSSEG)", 16 },
-		{ "ADDRESS(PAGE_OFFSET)", 16 },			/* 5 */
-		{ "ADDRESS(PHYS_OFFSET)", 16 },
-		{ "NUMBER(PMD_ORDER)", 10 }, /* Optional here and above */
-		{ "NUMBER(PAGE_SHIFT)", 10 },
-		{ "NUMBER(PGD_ORDER)", 10 },
-		{ "NUMBER(PTE_ORDER)", 10 },			/* 10 */
-		{ "NUMBER(_PAGE_PRESENT)", 10 },
-		{ "NUMBER(_PAGE_HUGE)", 10 },
-		{ "ADDRESS(IO_BASE)", 16 },
-		{ "NUMBER(_PFN_SHIFT)", 10 },
+		{ "ADDRESS(_text)", 16, 0, 0 },			/* 0 */
+		{ "ADDRESS(_end)", 16, 0, 0 },
+		{ "ADDRESS(_phys_to_kernel_offset)", 16, 0, 0 },
+		{ "ADDRESS(CKSEG0)", 16, 0, 0 },
+		{ "ADDRESS(CKSSEG)", 16, 0, 0 },
+		{ "ADDRESS(PAGE_OFFSET)", 16, 0, 0 },		/* 5 */
+		{ "ADDRESS(PHYS_OFFSET)", 16, 0, 0 },
+		{ "NUMBER(PMD_ORDER)", 10, 0, 0 },
+		{ "NUMBER(_PAGE_HUGE)", 10, 0, 0 },
+		/* Optional above here, following are required. */
+#define VREQ 9 /* First required item */
+		{ "NUMBER(PAGE_SHIFT)", 10, 0, 0 },
+		{ "NUMBER(PGD_ORDER)", 10, 0, 0 },		/* 10 */
+		{ "NUMBER(PTE_ORDER)", 10, 0, 0 },
+		{ "NUMBER(_PAGE_PRESENT)", 10, 0, 0 },
+		{ "ADDRESS(IO_BASE)", 16, 0, 0 },
+		{ "NUMBER(_PFN_SHIFT)", 10, 0, 0 },
 		{ NULL }
 	};
-#define VREQ 8 /* First required item */
 
 	handle_vminfo_notes(pelf, vmci);
 	for (i = VREQ; vmci[i].name; i++) { 
@@ -496,6 +507,7 @@ mips_walk(struct elfc *pelf, GElf_Addr pgd,
 	d->page_present_mask = vmci[VREQ + 3].val;
 	d->IO_BASE = vmci[VREQ + 5].val;
 	d->pfn_shift = vmci[VREQ + 6].val;
+	d->_PAGE_HUGE = vmci[8].val; /* Zero if not set */
 	d->is_64bit = elfc_getclass(pelf) == ELFCLASS64;
 	d->is_bigendian = elfc_getencoding(pelf) == ELFDATA2MSB;
 
