@@ -90,6 +90,7 @@ struct archinfo {
 	struct link link; /* For internal use */
 	char *name;
 	int  elfmachine;
+	int  default_elfclass;
 	int (*walk_page_table)(struct elfc *pelf, GElf_Addr pgd,
 			       handle_page_f handle_page,
 			       void *userdata);

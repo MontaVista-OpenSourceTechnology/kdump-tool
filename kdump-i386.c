@@ -267,5 +267,6 @@ i386_walk(struct elfc *pelf, GElf_Addr pgd,
 struct archinfo i386_arch = {
 	.name = "i386",
 	.elfmachine = EM_386,
+	.default_elfclass = ELFCLASS32,
 	.walk_page_table = i386_walk
 };

@@ -199,5 +199,6 @@ x86_64_walk(struct elfc *pelf, GElf_Addr pgd,
 struct archinfo x86_64_arch = {
 	.name = "x86_64",
 	.elfmachine = EM_X86_64,
+	.default_elfclass = ELFCLASS64,
 	.walk_page_table = x86_64_walk
 };

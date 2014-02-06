@@ -551,5 +551,6 @@ mips_walk(struct elfc *pelf, GElf_Addr pgd,
 struct archinfo mips_arch = {
 	.name = "mips",
 	.elfmachine = EM_MIPS,
+	.default_elfclass = ELFCLASS64,
 	.walk_page_table = mips_walk
 };

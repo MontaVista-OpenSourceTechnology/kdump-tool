@@ -547,6 +547,7 @@ tovelf(int argc, char *argv[])
 		{ "vmcore",	required_argument,	NULL, 'v' },
 		{ "intype",	required_argument,	NULL, 'I' },
 		{ "physpgd",	required_argument,	NULL, 'P' },
+		{ "elfclass",	required_argument,	NULL, 'c' },
 		{ NULL }
 	};
 	static const char *helpstr[] = {
@@ -557,6 +558,7 @@ tovelf(int argc, char *argv[])
 		"The vmcore file, defaults to /proc/vmcore, only for oldmem",
 		"The file type, either pelf or oldmem, defaults to pelf",
 		"The physical address of the kernel page descriptor",
+		"Set the elfclass (either 32 or 64)",
 		NULL
 	};
 	int fd = -1;
@@ -572,10 +574,11 @@ tovelf(int argc, char *argv[])
 	int do_oldmem = 0;
 	struct archinfo *arch;
 	struct velf_data d;
+	int elfclass = ELFCLASSNONE;
 
 	for (;;) {
 		int curr_optind = optind;
-		int c = getopt_long(argc, argv, "+ho:i:v:I:P:", longopts,
+		int c = getopt_long(argc, argv, "+ho:i:v:I:P:c:", longopts,
 				    NULL);
 		if (c == -1)
 			break;
@@ -609,6 +612,16 @@ tovelf(int argc, char *argv[])
 			pgd_set = 1;
 			break;
 		}
+		case 'c':
+			if (strcmp(optarg, "32") == 0) {
+				elfclass = ELFCLASS32;
+			} else if (strcmp(optarg, "64") == 0) {
+				elfclass = ELFCLASS64;
+			} else {
+				subcmd_usage("Unknown ELF class: %s\n",
+					     optarg);
+			}
+			break;
 		case 'h':
 			subcmd_help("", longopts, helpstr);
 			return 0;
@@ -688,11 +701,8 @@ nopgd:
 		goto out_err;
 	}
 	elfc_setmachine(velf, elfc_getmachine(elf));
-	elfc_setclass(velf, elfc_getclass(elf));
 	elfc_setencoding(velf, elfc_getencoding(elf));
 	copy_elf_notes(velf, elf);
-
-	elfc_set_fd(velf, ofd);
 
 	arch = find_arch(elfc_getmachine(elf));
 	if (!arch) {
@@ -700,6 +710,14 @@ nopgd:
 			elfc_getmachine(elf));
 		goto out_err;
 	}
+
+	if (elfclass == ELFCLASSNONE) {
+		elfc_setclass(velf, arch->default_elfclass);
+	} else {
+		elfc_setclass(velf, elfclass);
+	}
+
+	elfc_set_fd(velf, ofd);
 
 	memset(&d, 0, sizeof(d));
 	d.velf = velf;

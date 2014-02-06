@@ -159,5 +159,6 @@ arm_walk(struct elfc *pelf, GElf_Addr pgdaddr,
 struct archinfo arm_arch = {
 	.name = "arm",
 	.elfmachine = EM_ARM,
+	.default_elfclass = ELFCLASS32,
 	.walk_page_table = arm_walk
 };

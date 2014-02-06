@@ -17,6 +17,7 @@ kdump-tool \- Kdump dump handling tool
 [\-\-vmcore|-v <vmcore>]
 [\-\-intype|-I oldmem|pelf]
 [\-\-physpgd|-P <pgd phys address>]
+[\-\-elfclass|-c 32|64]
 
 .B kdump-tool
 [\-\-help] dumpmem [\--help]
@@ -106,6 +107,16 @@ process' physical page directory address.  That can be obtained with
 gdb.  It will only dump the process memory that is present, so if
 memory is not yet paged in or has been paged out, it will not be
 present.
+.TP
+.I "\-\-elfclass|-c 32|64"
+All physical memory coredump are 64-bit because many 32-bit
+architectures can map physical addresses greater than 32-bits (like
+x86 PAE).  For architectures, like MIPS, where the kernel may be 32 or
+64 bits, you have to set the class to 32 bits if you have a 32-bit
+kernel (or are generating a coredump for a userland process that is
+32-bits).  x86_64 and i386 are distinct architectures, so you won't
+have a problem with the kernel, but you might have the same issue for
+userland.
 
 .SH RATIONALE
 Why not just use /proc/vmcore, you ask?  The /proc/vmcore file

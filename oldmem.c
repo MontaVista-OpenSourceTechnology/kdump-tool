@@ -399,7 +399,11 @@ read_oldmem(char *oldmem, char *vmcore)
 		goto out_err;
 	}
 	elfc_setmachine(elf, elfc_getmachine(velf));
-	elfc_setclass(elf, elfc_getclass(velf));
+	/*
+	 * 32-bit architectures often can address more than 32-bits of
+	 * physical memory.  So always use 64-bits.
+	 */ 
+	elfc_setclass(elf, ELFCLASS64);
 	elfc_setencoding(elf, elfc_getencoding(velf));
 	copy_elf_notes(elf, velf);
 
