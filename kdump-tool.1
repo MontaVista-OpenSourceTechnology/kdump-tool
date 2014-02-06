@@ -15,8 +15,17 @@ kdump-tool \- Kdump dump handling tool
 [\-\-infile|\-i <oldmem or pelf>]
 [\-\-outfile|-o <output file>]
 [\-\-vmcore|-v <vmcore>]
-[\-\-intype|-I outmem|pelf]
+[\-\-intype|-I oldmem|pelf]
 [\-\-physpgd|-P <pgd phys address>]
+
+.B kdump-tool
+[\-\-help] dumpmem [\--help]
+[\-\-infile|\-i <oldmem or pelf>]
+[\-\-outfile|-o <output file>]
+[\-\-vmcore|-v <vmcore>]
+[\-\-intype|-I oldmem|pelf]
+[\-\-is_physical|-p]
+<address> <size>
 
 .SH DESCRIPTION
 The
@@ -57,6 +66,12 @@ will process the pelf file into a velf file.
 
 .BR kdump-tool tovelf -I outmem -o <velf file>
 will process /dev/mem and /dev/vmcore directly into a velf file.
+
+.BR kdump-tool
+will also dump ranges of memory from the various input types it
+supports using the dumpmem operation.  The parameters all work as
+before, with the addition of -p, which specifies the address as
+physical.  Otherwise the address is assumed to be virtual.
 
 .SH OPTIONS
 .TP
