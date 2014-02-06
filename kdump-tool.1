@@ -25,37 +25,38 @@ program extracts kernel coredumps from the target and processes those
 coredumps into something gdb can understand.
 .PP
 In a kdump crash kernel, there are two files that let you extract
-information about the kernel that just crashed: /dev/oldmem and
-/proc/vmcore.  /dev/oldmem is a raw file holding an image of the
-physical memory of the previous host.  /proc/vmcore is a kernel
-coredump plus some extra information.  (See
+information about the kernel that just crashed: /dev/mem and
+/proc/vmcore.  /dev/mem is a raw file holding an image of the physical
+memory of the system, including the previous host's memory.
+/proc/vmcore is a kernel coredump plus some extra information.  (See
 .BR RATONALE
 for why this coredump is not sufficient.)
 
 .BR kdump-tool
-deals with two other types of files, pelf files and velf files.  A
-pelf file holds a physical memory coredump, basically what comes out
-of /dev/oldmem in elf format.  A velf file holds a virtual memory
-coredump, this is in a format that gdb can load load and use.  gdb
-needs the virtual kernel addresses to work.
+deals with two other types of files, both elf files.  Physical memory
+elf files (pelf) and virtual memory elf files (velf).  A pelf file
+holds a physical memory coredump, basically what comes out of
+/dev/mem in elf format.  Note that
+.BR kdump-tool
+will get the physical memory ranges for the old kernel out of
+/proc/vmcore, if available, and only store the necessary ranges.
+
+A velf file holds a virtual memory coredump, this is in a format that
+gdb can load load and use.  gdb needs the virtual kernel addresses to
+work.
 
 .BR kdump-tool topelf -o <pelf file>
-will process /dev/oldmem and /proc/vmcore into a pelf file.  This is
-generally preferred on a target system, pelf files are smaller than
-velf files and they are quicker to process.  Plus a velf file may not
-have all of physical memory, in case you are in a desparate situation
-and need to get to userland memory.
+will process /dev/mem and /proc/vmcore into a pelf file.  This is
+generally preferred on a target system, pelf files are usually smaller
+than velf files and they are quicker to process.  Plus a velf file may
+not have all of physical memory, in case you are in a desperate
+situation and need to get to userland memory.
 
 .BR kdump-tool tovelf -i <pelf file> -o <velf file>
 will process the pelf file into a velf file.
 
 .BR kdump-tool tovelf -I outmem -o <velf file>
-will process /dev/outmem and /dev/vmcore directly into a velf file.
-
-Note that /dev/oldmem cannot be directly copied on all systems.  It
-has holes, and reading those holes causes ENONMEM to be returned.
-.BR kdump-tool 
-understands this and leaves these holes.
+will process /dev/mem and /dev/vmcore directly into a velf file.
 
 .SH OPTIONS
 .TP
@@ -63,28 +64,33 @@ understands this and leaves these holes.
 Output help.
 .TP
 .I "\-\-oldmem|\-i <oldmem>"
-Set the location of the oldmem file.  The default -s /dev/oldmem.
+Set the location of the oldmem file.  The default -s /dev/mem.
 .TP
 .I "\-\-outfile|-o <output file>"
 Set the output file, this parameter is required.
 .TP
 .I "\-\-vmcore|-v <vmcore>"
-Set the locatino of the vmcore file, /proc/vmcore by default.
+Set the location of the vmcore file, /proc/vmcore by default.
 .TP
 .I "\-\-infile|\-i <oldmem or pelf>"
 Set the location of the input file for converting to velf.  This can
-either be a raw memory file (/dev/oldmem by default) if
+either be a raw memory file (/dev/mem by default) if
 .BR \-I outmem
 is specified.  If
 .BR \-I outmem
-is given, then this parameter is required.
+is not given, then this parameter is required.
 .TP
 .I "\-\-intype|-I outmem|pelf"
 Set the input file time for conversion to velf.
 .TP
 .I "\-\-physpgd|-P <pgd phys address>"
 Set the physical address of the pgd pointer.  This is read from the
-input file, but if it is missing or wrong it can be overridden.
+input file, but if it is missing or wrong it can be overridden.  This
+can also be used to create a coredump of a process if you have the
+process' physical page directory address.  That can be obtained with
+gdb.  It will only dump the process memory that is present, so if
+memory is not yet paged in or has been paged out, it will not be
+present.
 
 .SH RATIONALE
 Why not just use /proc/vmcore, you ask?  The /proc/vmcore file
@@ -96,9 +102,9 @@ vmemmap, it's almost impossible to use gdb on the standard kernel
 coredump.
 
 .SH FILES
-/dev/oldmem, /proc/vmcore
+/dev/mem, /proc/vmcore
 
-See Documentation/kdump/kdump.txt for more details.
+See Documentation/kdump/kdump.txt in the Linux kernel for more details.
 
 .SH "SEE ALSO"
 kexec(8)
@@ -108,4 +114,4 @@ This is still fairly primitive and doesn't support all architectures.
 
 .SH AUTHOR
 .PP
-Corey Minyard <minyard@mvista.org>
+Corey Minyard <cminyard@mvista.org>
