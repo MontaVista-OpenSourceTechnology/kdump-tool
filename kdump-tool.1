@@ -60,7 +60,8 @@ will process /dev/mem and /proc/vmcore into a pelf file.  This is
 generally preferred on a target system, pelf files are usually smaller
 than velf files and they are quicker to process.  Plus a velf file may
 not have all of physical memory, in case you are in a desperate
-situation and need to get to userland memory.
+situation and need to get to userland memory.  Note that the output
+will go to standard output if you don't specify -o.
 
 .BR kdump-tool tovelf -i <pelf file> -o <velf file>
 will process the pelf file into a velf file.
@@ -83,7 +84,7 @@ Output help.
 Set the location of the oldmem file.  The default -s /dev/mem.
 .TP
 .I "\-\-outfile|-o <output file>"
-Set the output file, this parameter is required.
+Set the output file, output will go to stdout if this is not supplied.
 .TP
 .I "\-\-vmcore|-v <vmcore>"
 Set the location of the vmcore file, /proc/vmcore by default.

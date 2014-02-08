@@ -291,6 +291,10 @@ elfc_phdr_tmpfile_alloc(struct elfc *e)
 	return tf;
 }
 
+/*
+ * Create a copy of the contents in a temparary file.  This way if we
+ * are reading and writing the same file, the data won't be clobbered.
+ */
 static int
 elfc_phdr_tmpfile_pre_write(struct elfc *e, GElf_Phdr *phdr,
 			    void *data, void *userdata)
@@ -1125,12 +1129,6 @@ write_elf32_ehdr(struct elfc *e)
 	Elf32_Ehdr e32;
 	int rv;
 
-	rv = lseek(e->fd, 0, SEEK_SET);
-	if (rv == -1) {
-		e->eerrno = errno;
-		return -1;
-	}
-
 	memcpy(e32.e_ident, e->hdr.e_ident, sizeof(e32.e_ident));
 #define EhdrE(type, name) e32.e_ ## name = elfc_put ## type(e, e->hdr.e_ ## name);
 	Ehdr_Entries;
@@ -1153,12 +1151,6 @@ write_elf64_ehdr(struct elfc *e)
 {
 	Elf64_Ehdr e64;
 	int rv;
-
-	rv = lseek(e->fd, 0, SEEK_SET);
-	if (rv == -1) {
-		e->eerrno = errno;
-		return -1;
-	}
 
 	memcpy(e64.e_ident, e->hdr.e_ident, sizeof(e64.e_ident));
 #define EhdrE(type, name) e64.e_ ## name = elfc_put ## type(e, e->hdr.e_ ## name);
@@ -1881,6 +1873,9 @@ elfc_write(struct elfc *e)
 	e->hdr.e_phnum = e->num_phdrs;
 	e->hdr.e_phentsize = elfc_phdr_size_one(e);
 
+	/* Ignore errors here, it will fail on stdin. */
+	(void) lseek(e->fd, 0, SEEK_SET);
+
 	if (e->hdr.e_ident[EI_CLASS] == ELFCLASS32)
 		rv = write_elf32_ehdr(e);
 	else
@@ -1915,11 +1910,10 @@ elfc_write(struct elfc *e)
 
 	for (i = 0; i < e->num_phdrs; i++) {
 		if (e->phdrs[i].do_write) {
-			rv = lseek(e->fd, e->phdrs[i].p.p_offset, SEEK_SET);
-			if (rv == -1) {
-				e->eerrno = errno;
-				goto out;
-			}
+			/*
+			 * Should already be in the correct position
+			 * here, no need to seek.
+			 */
 			rv = e->phdrs[i].do_write(e, e->fd, &e->phdrs[i].p,
 						  e->phdrs[i].data,
 						  e->phdrs[i].userdata);

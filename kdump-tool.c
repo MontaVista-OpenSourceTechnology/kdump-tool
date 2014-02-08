@@ -277,11 +277,11 @@ topelf(int argc, char *argv[])
 	static const char *helpstr[] = {
 		"This info",
 		"File to use instead of /dev/mem",
-		"File send output to",
+		"File send output to instead of stdout",
 		"The vmcore file, defaults to /proc/vmcore",
 		NULL
 	};
-	int ofd = -1;
+	int ofd = 1;
 	int rv = 0;
 	struct elfc *elf = NULL;
 	struct vmcoreinfo_data vmci[] = {
@@ -325,14 +325,13 @@ topelf(int argc, char *argv[])
 	if (!vmci[0].found)
 		fprintf(stderr, "Warning: phys pgd ptr not in vmcore\n");
 
-	if (!outfile)
-		subcmd_usage("No output file given\n");
-
-	ofd = creat(outfile, 0644);
-	if (ofd == -1) {
-		fprintf(stderr, "Unable to open %s: %s\n", outfile,
-			strerror(errno));
-		goto out_err;
+	if (outfile) {
+		ofd = creat(outfile, 0644);
+		if (ofd == -1) {
+			fprintf(stderr, "Unable to open %s: %s\n", outfile,
+				strerror(errno));
+			goto out_err;
+		}
 	}
 
 	elfc_set_fd(elf, ofd);
@@ -347,7 +346,7 @@ topelf(int argc, char *argv[])
 out:
 	if (elf)
 		elfc_free(elf);
-	if (ofd != -1)
+	if ((ofd != -1) && (ofd != 1))
 		close(ofd);
 	return rv;
 
@@ -554,7 +553,7 @@ tovelf(int argc, char *argv[])
 		"This info",
 		"The input file, defaults to /dev/mem if intype is oldmem, "
 		"otherwise required",
-		"File send output to",
+		"File send output to, stdout if not specified",
 		"The vmcore file, defaults to /proc/vmcore, only for oldmem",
 		"The file type, either pelf or oldmem, defaults to pelf",
 		"The physical address of the kernel page descriptor",
@@ -562,7 +561,7 @@ tovelf(int argc, char *argv[])
 		NULL
 	};
 	int fd = -1;
-	int ofd = -1;
+	int ofd = 1;
 	int rv = 0;
 	GElf_Addr pgd;
 	int pgd_set = 0;
@@ -679,14 +678,13 @@ nopgd:
 		goto out_err;
 	}
 
-	if (!outfile)
-		subcmd_usage("No output file given\n");
-
-	ofd = creat(outfile, 0644);
-	if (ofd == -1) {
-		fprintf(stderr, "Unable to open %s: %s\n", outfile,
-			strerror(errno));
-		goto out_err;
+	if (outfile) {
+		ofd = creat(outfile, 0644);
+		if (ofd == -1) {
+			fprintf(stderr, "Unable to open %s: %s\n", outfile,
+				strerror(errno));
+			goto out_err;
+		}
 	}
 
 	velf = elfc_alloc();
@@ -747,7 +745,7 @@ out:
 		close(elfc_get_fd(elf));
 		elfc_free(elf);
 	}
-	if (ofd != -1)
+	if ((ofd != -1) && (ofd != 1))
 		close(ofd);
 	return rv;
 
