@@ -1,6 +1,13 @@
 This is kdumptool, a tool for creating usable coredumps from a kernel
 crash.
 
+You will need to patch your kernel with the patches in
+"kernel-patches" before this will work.  These patches add system
+memory ranges and the physical address of the kernel page table to the
+data passed from the old kernel to the new kernel.  The MIPS-specific
+patch is only required for MIPS, obviously, it adds a boatload of
+parameters that are required to successfully navigate the page tables.
+
 To use this, use the kexec/kdump instructions to get into a crash dump
 kernel (the kernel that boots from the crashed kernel).  It will have
 /dev/oldmem and /proc/vmcore available.
