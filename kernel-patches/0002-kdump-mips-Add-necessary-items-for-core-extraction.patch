@@ -31,7 +31,7 @@ index 992e184..e3dc83f 100644
  
  extern const unsigned char relocate_new_kernel[];
  extern const size_t relocate_new_kernel_size;
-@@ -108,3 +109,32 @@ machine_kexec(struct kimage *image)
+@@ -108,4 +109,32 @@ machine_kexec(struct kimage *image)
  #endif
  	((noretfun_t) reboot_code_buffer)();
  }
@@ -57,10 +57,10 @@ index 992e184..e3dc83f 100644
 +	VMCOREINFO_ADDRESS(CKSEG0);
 +	VMCOREINFO_ADDRESS(CKSSEG);
 +#else /* CONFIG_64BIT */
-+	VMCOREINFO_ADDRESS(PAGE_OFFSET);
 +	VMCOREINFO_ADDRESS(PHYS_OFFSET);
 +#endif /* CONFIG_64BIT */
 +
++	VMCOREINFO_ADDRESS(PAGE_OFFSET);
 +	VMCOREINFO_ADDRESS(IO_BASE);
 +	VMCOREINFO_NUMBER(_PFN_SHIFT);
 +}

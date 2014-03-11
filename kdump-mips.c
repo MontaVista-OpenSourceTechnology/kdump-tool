@@ -57,7 +57,6 @@ enum vmcoreinfo_labels {
 	VMCI__phys_to_kernel_offset,
 	VMCI_CKSEG0,
 	VMCI_CKSSEG,
-	VMCI_PAGE_OFFSET,
 	VMCI_PHYS_OFFSET,
 	VMCI_PMD_ORDER,
 	VMCI__PAGE_HUGE,
@@ -67,8 +66,8 @@ enum vmcoreinfo_labels {
 	VMCI_PGD_ORDER,
 	VMCI_PTE_ORDER,
 	VMCI__PAGE_PRESENT,
-	VMCI_IO_BASE,
 	VMCI__PFN_SHIFT,
+	VMCI_PAGE_OFFSET,
 	/* End actual elements. */
 	VMCI_NUM_ELEMENTS
 };
@@ -126,8 +125,6 @@ struct mips_walk_data {
 
 	uint64_t PAGE_OFFSET;
 	uint64_t PHYS_OFFSET;
-
-	uint64_t IO_BASE;
 };
 
 static int
@@ -226,12 +223,6 @@ walk_mips32(struct mips_walk_data *d, GElf_Addr pgdaddr,
 		d->pgd_shift = d->pmd_shift + (d->pmd_order ? 11 : 10);
 	} else
 		d->pgd_shift = d->page_shift + (d->pte_order ? 11 : 10);
-
-	if (!vmci[VMCI_PAGE_OFFSET].found) {
-		fprintf(stderr, "PAGE_OFFSET not present in core file\n");
-		return -1;
-	}
-	d->PAGE_OFFSET = vmci[VMCI_PAGE_OFFSET].val;
 
 	if (!vmci[VMCI_PHYS_OFFSET].found) {
 		fprintf(stderr, "PHYS_OFFSET not present in core file\n");
@@ -446,7 +437,7 @@ walk_mips64(struct mips_walk_data *d, GElf_Addr pgdaddr,
 	maxaddr = elfc_max_paddr(d->pelf);
 	for (addr = 0; addr < maxaddr; addr += d->page_size) {
 		rv = handle_page(d->pelf,
-				 addr, addr + d->IO_BASE,
+				 addr, addr + d->PAGE_OFFSET,
 				 1 << d->page_shift, userdata);
 		if (rv == -1)
 			return -1;
@@ -516,7 +507,6 @@ mips_walk(struct elfc *pelf, GElf_Addr pgd,
 		VMCI_NUM(PGD_ORDER),
 		VMCI_NUM(PTE_ORDER),
 		VMCI_NUM(_PAGE_PRESENT),
-		VMCI_ADDR(IO_BASE),
 		VMCI_NUM(_PFN_SHIFT),
 	};
 
@@ -535,9 +525,9 @@ mips_walk(struct elfc *pelf, GElf_Addr pgd,
 	d->pgd_order = vmci[VMCI_PGD_ORDER].val;
 	d->pte_order = vmci[VMCI_PTE_ORDER].val;
 	d->page_present_mask = vmci[VMCI__PAGE_PRESENT].val;
-	d->IO_BASE = vmci[VMCI_IO_BASE].val;
 	d->pfn_shift = vmci[VMCI__PFN_SHIFT].val;
 	d->_PAGE_HUGE = vmci[VMCI__PAGE_HUGE].val; /* Zero if not set */
+	d->PAGE_OFFSET = vmci[VMCI_PAGE_OFFSET].val;
 	d->is_64bit = elfc_getclass(pelf) == ELFCLASS64;
 	d->is_bigendian = elfc_getencoding(pelf) == ELFDATA2MSB;
 
