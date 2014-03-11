@@ -47,6 +47,37 @@
 #define MAX_PGTAB_ENTRIES(pgentry_size) ((1 << MAX_SHIFT) * (1 << MAX_ORDER) / \
 					 (pgentry_size))
 
+/*
+ * Order here does not matter, as long as the required elements are all
+ * last.
+ */
+enum vmcoreinfo_labels {
+	VMCI__text,
+	VMCI__end,
+	VMCI__phys_to_kernel_offset,
+	VMCI_CKSEG0,
+	VMCI_CKSSEG,
+	VMCI_PAGE_OFFSET,
+	VMCI_PHYS_OFFSET,
+	VMCI_PMD_ORDER,
+	VMCI__PAGE_HUGE,
+	/* Begin required elements. */
+#define VREQ	VMCI_PAGE_SHIFT
+	VMCI_PAGE_SHIFT,
+	VMCI_PGD_ORDER,
+	VMCI_PTE_ORDER,
+	VMCI__PAGE_PRESENT,
+	VMCI_IO_BASE,
+	VMCI__PFN_SHIFT,
+	/* End actual elements. */
+	VMCI_NUM_ELEMENTS
+};
+
+#define VMCI_ADDR(lbl)						\
+	[VMCI_ ## lbl] = { "ADDRESS(" #lbl ")", 16, 0, 0 }
+#define VMCI_NUM(lbl)						\
+	[VMCI_ ## lbl] = { "NUMBER(" #lbl ")", 10, 0, 0 }
+
 static uint64_t convbe64toh(uint64_t val)
 {
 	return be64toh(val);
@@ -196,17 +227,17 @@ walk_mips32(struct mips_walk_data *d, GElf_Addr pgdaddr,
 	} else
 		d->pgd_shift = d->page_shift + (d->pte_order ? 11 : 10);
 
-	if (!vmci[5].found) {
+	if (!vmci[VMCI_PAGE_OFFSET].found) {
 		fprintf(stderr, "PAGE_OFFSET not present in core file\n");
 		return -1;
 	}
-	d->PAGE_OFFSET = vmci[5].val;
+	d->PAGE_OFFSET = vmci[VMCI_PAGE_OFFSET].val;
 
-	if (!vmci[6].found) {
-		fprintf(stderr, "PYS_OFFSET not present in core file\n");
+	if (!vmci[VMCI_PHYS_OFFSET].found) {
+		fprintf(stderr, "PHYS_OFFSET not present in core file\n");
 		return -1;
 	}
-	d->PHYS_OFFSET = vmci[6].val;
+	d->PHYS_OFFSET = vmci[VMCI_PHYS_OFFSET].val;
 
 	/*
 	 * Add the direct mapping first.
@@ -369,30 +400,32 @@ walk_mips64(struct mips_walk_data *d, GElf_Addr pgdaddr,
 	else
 		d->conv64 = convle64toh;
 
-	if (vmci[0].found || vmci[1].found || vmci[2].found) {
-		if (!(vmci[0].found && vmci[1].found & vmci[2].found)) {
+	i = vmci[VMCI__text].found + vmci[VMCI__end].found +
+		vmci[VMCI__phys_to_kernel_offset].found;
+	if (i != 0) {
+		if (i != 3) {
 			fprintf(stderr, "All of _text, _end, and"
 				" phys_to_kernel_offset not present\n");
 			return -1;
 		}
-		d->_text = vmci[0].val;
-		d->_end = vmci[1].val;
-		d->phys_to_kernel_offset = vmci[2].val;
+		d->_text = vmci[VMCI__text].val;
+		d->_end = vmci[VMCI__end].val;
+		d->phys_to_kernel_offset = vmci[VMCI__phys_to_kernel_offset].val;
 		d->mapped_kernel = 1;
 	} else
 		d->mapped_kernel = 0;
 
-	if (!vmci[3].found) {
+	if (!vmci[VMCI_CKSEG0].found) {
 		fprintf(stderr, "CKSEG0 not present in core file\n");
 		return -1;
 	}
-	d->CKSEG0 = vmci[3].val;
+	d->CKSEG0 = vmci[VMCI_CKSEG0].val;
 
-	if (!vmci[4].found) {
+	if (!vmci[VMCI_CKSSEG].found) {
 		fprintf(stderr, "CKSSEG not present in core file\n");
 		return -1;
 	}
-	d->CKSSEG = vmci[4].val;
+	d->CKSSEG = vmci[VMCI_CKSSEG].val;
 
 	/*
 	 * Add the default page tables for iomem and kernel.
@@ -469,25 +502,22 @@ mips_walk(struct elfc *pelf, GElf_Addr pgd,
 	struct mips_walk_data ds, *d = &ds;
 	int i;
 	int rv;
-	struct vmcoreinfo_data vmci[] = {
-		{ "ADDRESS(_text)", 16, 0, 0 },			/* 0 */
-		{ "ADDRESS(_end)", 16, 0, 0 },
-		{ "ADDRESS(_phys_to_kernel_offset)", 16, 0, 0 },
-		{ "ADDRESS(CKSEG0)", 16, 0, 0 },
-		{ "ADDRESS(CKSSEG)", 16, 0, 0 },
-		{ "ADDRESS(PAGE_OFFSET)", 16, 0, 0 },		/* 5 */
-		{ "ADDRESS(PHYS_OFFSET)", 16, 0, 0 },
-		{ "NUMBER(PMD_ORDER)", 10, 0, 0 },
-		{ "NUMBER(_PAGE_HUGE)", 10, 0, 0 },
-		/* Optional above here, following are required. */
-#define VREQ 9 /* First required item */
-		{ "NUMBER(PAGE_SHIFT)", 10, 0, 0 },
-		{ "NUMBER(PGD_ORDER)", 10, 0, 0 },		/* 10 */
-		{ "NUMBER(PTE_ORDER)", 10, 0, 0 },
-		{ "NUMBER(_PAGE_PRESENT)", 10, 0, 0 },
-		{ "ADDRESS(IO_BASE)", 16, 0, 0 },
-		{ "NUMBER(_PFN_SHIFT)", 10, 0, 0 },
-		{ NULL }
+	struct vmcoreinfo_data vmci[VMCI_NUM_ELEMENTS + 1] = {
+		VMCI_ADDR(_text),
+		VMCI_ADDR(_end),
+		VMCI_ADDR(_phys_to_kernel_offset),
+		VMCI_ADDR(CKSEG0),
+		VMCI_ADDR(CKSSEG),
+		VMCI_ADDR(PAGE_OFFSET),
+		VMCI_ADDR(PHYS_OFFSET),
+		VMCI_NUM(PMD_ORDER),
+		VMCI_NUM(_PAGE_HUGE),
+		VMCI_NUM(PAGE_SHIFT),
+		VMCI_NUM(PGD_ORDER),
+		VMCI_NUM(PTE_ORDER),
+		VMCI_NUM(_PAGE_PRESENT),
+		VMCI_ADDR(IO_BASE),
+		VMCI_NUM(_PFN_SHIFT),
 	};
 
 	handle_vminfo_notes(pelf, vmci);
@@ -500,19 +530,19 @@ mips_walk(struct elfc *pelf, GElf_Addr pgd,
 	}
 
 	d->pelf = pelf;
-	d->page_shift = vmci[VREQ + 0].val;
+	d->page_shift = vmci[VMCI_PAGE_SHIFT].val;
 	d->page_size = (1 << d->page_shift);
-	d->pgd_order = vmci[VREQ + 1].val;
-	d->pte_order = vmci[VREQ + 2].val;
-	d->page_present_mask = vmci[VREQ + 3].val;
-	d->IO_BASE = vmci[VREQ + 5].val;
-	d->pfn_shift = vmci[VREQ + 6].val;
-	d->_PAGE_HUGE = vmci[8].val; /* Zero if not set */
+	d->pgd_order = vmci[VMCI_PGD_ORDER].val;
+	d->pte_order = vmci[VMCI_PTE_ORDER].val;
+	d->page_present_mask = vmci[VMCI__PAGE_PRESENT].val;
+	d->IO_BASE = vmci[VMCI_IO_BASE].val;
+	d->pfn_shift = vmci[VMCI__PFN_SHIFT].val;
+	d->_PAGE_HUGE = vmci[VMCI__PAGE_HUGE].val; /* Zero if not set */
 	d->is_64bit = elfc_getclass(pelf) == ELFCLASS64;
 	d->is_bigendian = elfc_getencoding(pelf) == ELFDATA2MSB;
 
-	d->pmd_present = vmci[7].found;
-	d->pmd_order = vmci[7].val;
+	d->pmd_present = vmci[VMCI_PMD_ORDER].found;
+	d->pmd_order = vmci[VMCI_PMD_ORDER].val;
 
 	if (d->pgd_order > MAX_ORDER) {
 		fprintf(stderr, "pgd_order is %d, only 0 or 1 are supported.\n",
