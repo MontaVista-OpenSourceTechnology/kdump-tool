@@ -798,7 +798,7 @@ elfc_phdr_write(struct elfc *e, int pnum, GElf_Off off,
 		e->eerrno = EINVAL;
 		return -1;
 	}
-	if (!e->phdrs[pnum].get_data) {
+	if (!e->phdrs[pnum].set_data) {
 		e->eerrno = ENOSYS;
 		return -1;
 	}
