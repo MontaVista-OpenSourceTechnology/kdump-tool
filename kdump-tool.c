@@ -366,6 +366,7 @@ struct velf_data {
 	GElf_Addr next_paddr;
 	GElf_Addr last_pgsize;
 	int prev_present;
+	int prev_pnum;
 };
 
 static int
@@ -495,11 +496,18 @@ velf_page_handler(struct elfc *pelf,
 {
 	struct velf_data *d = userdata;
 	GElf_Off dummy;
-	int rv;
-	int present;
+	int pnum, present, rv;
 
-	present = elfc_pmem_file_offset(d->pelf, paddr, pgsize, &dummy) != -1;
-	if ((d->next_vaddr != vaddr) || (d->next_paddr != paddr) || !present) {
+	present = elfc_pmem_offset(d->pelf, paddr, pgsize, &pnum, &dummy) != -1;
+	/*
+	 * We require entries to be contiguous in physical and virtual
+	 * space to be combined.  We also require them to be in the same
+	 * segment of the pelf file.  The pelf file was carefully written
+	 * to have no segments larger than 4GB so the offset remains <
+	 * UINT32_MAX.  Preserve that in the velf file.
+	 */
+	if (d->next_vaddr != vaddr || d->next_paddr != paddr ||
+	    !present || d->prev_pnum != pnum) {
 		if (d->prev_present) {
 			rv = gen_new_phdr(pelf, d);
 			if (rv == -1)
@@ -514,6 +522,7 @@ velf_page_handler(struct elfc *pelf,
 	}
 
 	d->prev_present = present;
+	d->prev_pnum = pnum;
 	d->next_vaddr = vaddr + pgsize;
 	d->next_paddr = paddr + pgsize;
 	d->last_pgsize = pgsize;

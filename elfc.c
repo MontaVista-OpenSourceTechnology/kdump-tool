@@ -889,7 +889,7 @@ elfc_pmem_offset(struct elfc *e, GElf_Addr addr, size_t len,
 		s_beg = e->phdrs[i].p.p_paddr;
 		s_end = s_beg + e->phdrs[i].p.p_filesz;
 
-		if ((addr >= s_beg) && ((addr + len) < s_end)) {
+		if ((addr >= s_beg) && ((addr + len) <= s_end)) {
 			*off = addr - s_beg;
 			*pnum = i;
 			return 0;
