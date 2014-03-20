@@ -143,7 +143,7 @@ GElf_Off elfc_phdr_size(struct elfc *e);
  */
 int elfc_add_phdr(struct elfc *e,
 		  GElf_Word type, GElf_Addr vaddr, GElf_Addr paddr,
-		  GElf_Word filesz, GElf_Word memsz, GElf_Word flags,
+		  GElf_Xword filesz, GElf_Xword memsz, GElf_Word flags,
 		  GElf_Word align);
 
 /*
@@ -151,7 +151,7 @@ int elfc_add_phdr(struct elfc *e,
  */
 int elfc_insert_phdr(struct elfc *e, int pnum,
 		     GElf_Word type, GElf_Addr vaddr, GElf_Addr paddr,
-		     GElf_Word filesz, GElf_Word memsz, GElf_Word flags,
+		     GElf_Xword filesz, GElf_Xword memsz, GElf_Word flags,
 		     GElf_Word align);
 
 /*
