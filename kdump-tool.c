@@ -468,7 +468,7 @@ gen_new_phdr(struct elfc *pelf, struct velf_data *d)
 			   d->next_paddr - d->start_paddr,
 			   d->next_paddr - d->start_paddr,
 			   PF_R | PF_W | PF_X,
-			   4096);
+			   d->last_pgsize);
 	if (rv == -1) {
 		fprintf(stderr, "Unable to add phdr: %s\n",
 			strerror(elfc_get_errno(d->velf)));
