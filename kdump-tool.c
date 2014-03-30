@@ -580,9 +580,10 @@ tovelf(int argc, char *argv[])
 		{ NULL }
 	};
 	int do_oldmem = 0;
-	struct archinfo *arch;
+	struct archinfo *arch = NULL;
 	struct velf_data d;
 	int elfclass = ELFCLASSNONE;
+	void *arch_data = NULL;
 
 	for (;;) {
 		int curr_optind = optind;
@@ -726,10 +727,15 @@ nopgd:
 
 	elfc_set_fd(velf, ofd);
 
+	rv = arch->setup_arch_pelf(elf, &arch_data);
+	if (rv == -1)
+		goto out_err;
+
 	memset(&d, 0, sizeof(d));
 	d.velf = velf;
 	d.pelf = elf;
-	rv = arch->walk_page_table(elf, pgd, velf_page_handler, &d);
+	rv = arch->walk_page_table(elf, pgd, 0, ~((GElf_Addr) 0), arch_data,
+				   velf_page_handler, &d);
 	if (rv == -1)
 		goto out_err;
 	rv = velf_cleanup(elf, &d);
@@ -746,6 +752,8 @@ nopgd:
 	}
 
 out:
+	if (arch && arch_data)
+		arch->cleanup_arch_data(arch_data);
 	if (fd != -1)
 		close(fd);
 	if (velf)

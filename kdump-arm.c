@@ -55,12 +55,17 @@ static uint32_t convle32toh(uint32_t val)
 
 static int
 handle_pte(struct arm_walk_data *d, GElf_Addr vaddr, GElf_Addr pteaddr,
+	   GElf_Addr begin_addr, GElf_Addr end_addr,
 	   handle_page_f handle_page, void *userdata)
 {
 	uint32_t pte[256];
 	int i;
 	int rv;
+	uint32_t start = begin_addr >> 12;
+	uint32_t end = end_addr >> 12;
 
+	begin_addr &= 0x00000fff;
+	end_addr &= 0x00000fff;
 	rv = elfc_read_pmem(d->pelf, pteaddr, pte, sizeof(pte));
 	if (rv == -1) {
 		fprintf(stderr, "Unable to read page table entry at"
@@ -69,7 +74,7 @@ handle_pte(struct arm_walk_data *d, GElf_Addr vaddr, GElf_Addr pteaddr,
 		return -1;
 	}
 
-	for (i = 0; i < 256; i++) {
+	for (i = start; i <= end; i++) {
 		uint64_t lpte = d->conv32(pte[i]);
 
 		switch (lpte & 0x3) {
@@ -102,13 +107,18 @@ handle_pte(struct arm_walk_data *d, GElf_Addr vaddr, GElf_Addr pteaddr,
 
 static int
 arm_walk(struct elfc *pelf, GElf_Addr pgdaddr,
-	  handle_page_f handle_page, void *userdata)
+	 GElf_Addr begin_addr, GElf_Addr end_addr, void *arch_data,
+	 handle_page_f handle_page, void *userdata)
 {
 	uint32_t pgd[4096];
 	struct arm_walk_data data, *d = &data;
 	int i;
 	int rv;
+	uint32_t start = begin_addr >> 20;
+	uint32_t end = end_addr >> 20;
 
+	begin_addr &= 0x000fffff;
+	end_addr &= 0x000fffff;
 	rv = elfc_read_pmem(pelf, pgdaddr, pgd, sizeof(pgd));
 	if (rv == -1) {
 		fprintf(stderr, "Unable to read page table descriptors at"
@@ -124,7 +134,7 @@ arm_walk(struct elfc *pelf, GElf_Addr pgdaddr,
 	else
 		d->conv32 = convle32toh;
 
-	for (i = 0; i < 4096; i++) {
+	for (i = start; i <= end; i++) {
 		uint32_t lpgd = d->conv32(pgd[i]);
 
 		switch (lpgd & 0x3) {
@@ -134,6 +144,7 @@ arm_walk(struct elfc *pelf, GElf_Addr pgdaddr,
 			continue;
 		case 1:
 			rv = handle_pte(d, i << 20, lpgd & ~0xff3,
+					begin_addr, end_addr,
 					handle_page, userdata);
 			if (rv == -1)
 				return -1;

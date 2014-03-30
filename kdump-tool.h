@@ -91,7 +91,11 @@ struct archinfo {
 	char *name;
 	int  elfmachine;
 	int  default_elfclass;
+	int (*setup_arch_pelf)(struct elfc *pelf, void **arch_data);
+	void (*cleanup_arch_data)(void *arch_data);
 	int (*walk_page_table)(struct elfc *pelf, GElf_Addr pgd,
+			       GElf_Addr begin_addr, GElf_Addr end_addr,
+			       void *arch_data,
 			       handle_page_f handle_page,
 			       void *userdata);
 };

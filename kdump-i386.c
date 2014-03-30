@@ -38,30 +38,53 @@
 
 #include "elfc.h"
 
-#define PHYSADDRMASK_4K 0xfffff000
-#define PAGESHIFT_4K	12
-#define PAGESIZE_4K	(1 << PAGESHIFT_4K)
-#define PHYSADDRMASK_4M 0xff800000
+#define PAGESHIFT_4K		12
+#define PAGEMASK_4K		((1 << PAGESHIFT_4K) - 1)
+#define PHYSADDRMASK_4K		(~PAGEMASK_4K)
+#define PAGESIZE_4K		(1 << PAGESHIFT_4K)
+
 #define PAGESHIFT_4M	22
-#define PAGESIZE_4M	(1 << PAGESHIFT_4M)
+#define PAGEMASK_4M		((1 << PAGESHIFT_4M) - 1)
+#define PHYSADDRMASK_4M		(~PAGEMASK_4M)
+#define PAGESIZE_4M		(1 << PAGESHIFT_4M)
 
-#define PHYSADDRMASK_2M 0x0000ffffffe00000
-#define PAGESHIFT_2M	21
-#define PAGESIZE_2M	(1 << PAGESHIFT_2M)
-#define PHYSADDRMASK_1G 0x0000ffffc0000000
-#define PAGESHIFT_1G	30
-#define PAGESIZE_1G	(1 << PAGESHIFT_1G)
+#define PHYSADDRMASK		0x0000ffffffffffff
 
-#define KERNBASE	0xffff000000000000
+#define PAGESHIFT_PAE_4K	12
+#define PAGEMASK_PAE_4K		((1ULL << PAGESHIFT_4K) - 1)
+#define PHYSADDRMASK_PAE_4K	(PHYSADDRMASK & ~PAGEMASK_4K)
+#define PAGESIZE_PAE_4K		(1 << PAGESHIFT_4K)
+
+#define PAGESHIFT_2M		21
+#define PAGEMASK_2M		((1ULL << PAGESHIFT_2M) - 1)
+#define PHYSADDRMASK_2M		(PHYSADDRMASK & ~PAGEMASK_2M)
+#define PAGESIZE_2M		(1 << PAGESHIFT_2M)
+
+#define PAGESHIFT_1G		30
+#define PAGEMASK_1G		((1ULL << PAGESHIFT_1G) - 1)
+#define PHYSADDRMASK_1G		(PHYSADDRMASK & ~PAGEMASK_1G)
+#define PAGESIZE_1G		(1 << PAGESHIFT_1G)
+
+#define PAGESHIFT_L1		39
+#define PAGEMASK_L1		((1ULL << PAGESHIFT_L1) - 1)
+#define PHYSADDRMASK_L1		(PHYSADDRMASK & ~PAGEMASK_L1)
+#define PAGESIZE_L1		(1 << PAGESHIFT_L1)
+
+#define KERNBASE		0xffff000000000000
 
 static int
 handle_pte(struct elfc *pelf, GElf_Addr vaddr, GElf_Addr pteaddr,
+	   GElf_Addr begin_addr, GElf_Addr end_addr,
 	   handle_page_f handle_page, void *userdata)
 {
 	uint32_t pte[1024];
 	uint32_t i;
 	int rv;
+	uint32_t start = begin_addr >> (32 - 28);
+	uint32_t end = end_addr >> (32 - 28);
 
+	begin_addr &= ~((uint64_t) 0) >> 14;
+	end_addr &= ~((uint64_t) 0) >> 14;
 	rv = elfc_read_pmem(pelf, pteaddr, pte, sizeof(pte));
 	if (rv == -1) {
 		fprintf(stderr, "Unable to read page table entry at"
@@ -70,7 +93,7 @@ handle_pte(struct elfc *pelf, GElf_Addr vaddr, GElf_Addr pteaddr,
 		return -1;
 	}
 
-	for (i = 0; i < 1024; i++) {
+	for (i = start; i <= end; i++) {
 		GElf_Addr newvaddr;
 		uint32_t lpte = le32toh(pte[i]);
 
@@ -92,12 +115,17 @@ handle_pte(struct elfc *pelf, GElf_Addr vaddr, GElf_Addr pteaddr,
 
 static int
 handle_pde(struct elfc *pelf, GElf_Addr pgd,
+	   GElf_Addr begin_addr, GElf_Addr end_addr,
 	   handle_page_f handle_page, void *userdata)
 {
 	uint32_t pde[1024];
 	uint32_t i;
 	int rv;
+	uint32_t start = begin_addr >> (32 - 14);
+	uint32_t end = end_addr >> (32 - 14);
 
+	begin_addr &= ~((uint64_t) 0) >> 14;
+	end_addr &= ~((uint64_t) 0) >> 14;
 	rv = elfc_read_pmem(pelf, pgd, pde, sizeof(pde));
 	if (rv == -1) {
 		fprintf(stderr, "Unable to read page descriptors at"
@@ -106,7 +134,7 @@ handle_pde(struct elfc *pelf, GElf_Addr pgd,
 		return -1;
 	}
 
-	for (i = 0; i < 1024; i++) {
+	for (i = start; i < end; i++) {
 		GElf_Addr newvaddr;
 		uint32_t lpde = le32toh(pde[i]);
 
@@ -123,6 +151,7 @@ handle_pde(struct elfc *pelf, GElf_Addr pgd,
 		} else {
 			rv = handle_pte(pelf, newvaddr,
 					lpde & PHYSADDRMASK_4K,
+					begin_addr, end_addr,
 					handle_page, userdata);
 		}
 		if (rv == -1)
@@ -133,12 +162,17 @@ handle_pde(struct elfc *pelf, GElf_Addr pgd,
 
 static int
 handle_pae_pte(struct elfc *pelf, GElf_Addr vaddr, GElf_Addr pteaddr,
+	       GElf_Addr begin_addr, GElf_Addr end_addr,
 	       handle_page_f handle_page, void *userdata)
 {
 	uint64_t pte[512];
 	uint32_t i;
 	int rv;
+	uint64_t start = begin_addr >> PAGESHIFT_PAE_4K;
+	uint64_t end = end_addr >> PAGESHIFT_PAE_4K;
 
+	begin_addr &= PAGEMASK_PAE_4K;
+	end_addr &= PAGEMASK_PAE_4K;
 	rv = elfc_read_pmem(pelf, pteaddr, pte, sizeof(pte));
 	if (rv == -1) {
 		fprintf(stderr, "Unable to read page table entry at"
@@ -147,20 +181,20 @@ handle_pae_pte(struct elfc *pelf, GElf_Addr vaddr, GElf_Addr pteaddr,
 		return -1;
 	}
 
-	for (i = 0; i < 512; i++) {
+	for (i = start; i < end; i++) {
 		GElf_Addr newvaddr;
 		uint64_t lpte = le64toh(pte[i]);
 
 		if (!(lpte & 0x1))
 			continue;
 
-		newvaddr = vaddr | (i << PAGESHIFT_4K);
+		newvaddr = vaddr | (i << PAGESHIFT_PAE_4K);
 
 		/* 4K page */
 		rv = handle_page(pelf, 
-				 lpte & PHYSADDRMASK_4K,
+				 lpte & PHYSADDRMASK_PAE_4K,
 				 newvaddr | KERNBASE,
-				 PAGESIZE_4K, userdata);
+				 PAGESIZE_PAE_4K, userdata);
 		if (rv == -1)
 			return -1;
 	}
@@ -169,12 +203,17 @@ handle_pae_pte(struct elfc *pelf, GElf_Addr vaddr, GElf_Addr pteaddr,
 
 static int
 handle_pae_pde(struct elfc *pelf, GElf_Addr vaddr, GElf_Addr pdeaddr,
-	   handle_page_f handle_page, void *userdata)
+	       GElf_Addr begin_addr, GElf_Addr end_addr,
+	       handle_page_f handle_page, void *userdata)
 {
 	uint64_t pde[512];
 	uint32_t i;
 	int rv;
+	uint64_t start = begin_addr >> PAGESHIFT_2M;
+	uint64_t end = end_addr >> PAGESHIFT_2M;
 
+	begin_addr &= PAGEMASK_2M;
+	end_addr &= PAGEMASK_2M;
 	rv = elfc_read_pmem(pelf, pdeaddr, pde, sizeof(pde));
 	if (rv == -1) {
 		fprintf(stderr, "Unable to read page directory entry at"
@@ -183,7 +222,7 @@ handle_pae_pde(struct elfc *pelf, GElf_Addr vaddr, GElf_Addr pdeaddr,
 		return -1;
 	}
 
-	for (i = 0; i < 512; i++) {
+	for (i = start; i < end; i++) {
 		GElf_Addr newvaddr;
 		uint64_t lpde = le64toh(pde[i]);
 
@@ -199,7 +238,8 @@ handle_pae_pde(struct elfc *pelf, GElf_Addr vaddr, GElf_Addr pdeaddr,
 					 PAGESIZE_2M, userdata);
 		} else {
 			rv = handle_pae_pte(pelf, newvaddr,
-					    lpde & PHYSADDRMASK_4K,
+					    lpde & PHYSADDRMASK_PAE_4K,
+					    begin_addr, end_addr,
 					    handle_page, userdata);
 		}
 		if (rv == -1)
@@ -210,12 +250,23 @@ handle_pae_pde(struct elfc *pelf, GElf_Addr vaddr, GElf_Addr pdeaddr,
 
 static int
 handle_pae_pdp(struct elfc *pelf, GElf_Addr pgd,
+	       GElf_Addr begin_addr, GElf_Addr end_addr,
 	       handle_page_f handle_page, void *userdata)
 {
 	uint64_t pdp[4];
 	uint32_t i;
 	int rv;
+	uint64_t start;
+	uint64_t end;
 
+	begin_addr &= 0xffffffff;
+	end_addr &= 0xffffffff;
+
+	start = begin_addr >> PAGESHIFT_1G;
+	end = end_addr >> PAGESHIFT_1G;
+
+	begin_addr &= PAGEMASK_1G;
+	end_addr &= PAGEMASK_1G;
 	rv = elfc_read_pmem(pelf, pgd, pdp, sizeof(pdp));
 	if (rv == -1) {
 		fprintf(stderr, "Unable to read page directory pointer at"
@@ -224,7 +275,7 @@ handle_pae_pdp(struct elfc *pelf, GElf_Addr pgd,
 		return -1;
 	}
 
-	for (i = 0; i < 4; i++) {
+	for (i = start; i <= end; i++) {
 		GElf_Addr newvaddr;
 		uint64_t lpdp = le64toh(pdp[i]);
 
@@ -233,7 +284,8 @@ handle_pae_pdp(struct elfc *pelf, GElf_Addr pgd,
 
 		newvaddr = i << PAGESHIFT_1G;
 		rv = handle_pae_pde(pelf, newvaddr,
-				    lpdp & PHYSADDRMASK_4K,
+				    lpdp & PHYSADDRMASK_PAE_4K,
+				    begin_addr, end_addr,
 				    handle_page, userdata);
 		if (rv == -1)
 			return -1;
@@ -243,6 +295,7 @@ handle_pae_pdp(struct elfc *pelf, GElf_Addr pgd,
 
 static int
 i386_walk(struct elfc *pelf, GElf_Addr pgd,
+	  GElf_Addr begin_addr, GElf_Addr end_addr, void *arch_data,
 	  handle_page_f handle_page, void *userdata)
 {
 	int pae = 0;
@@ -257,9 +310,11 @@ i386_walk(struct elfc *pelf, GElf_Addr pgd,
 		pae = vmci[0].val;
 
 	if (pae)
-		rv = handle_pae_pdp(pelf, pgd, handle_page, userdata);
+		rv = handle_pae_pdp(pelf, pgd, begin_addr, end_addr,
+				    handle_page, userdata);
 	else
-		rv = handle_pde(pelf, pgd, handle_page, userdata);
+		rv = handle_pde(pelf, pgd,  begin_addr, end_addr,
+				handle_page, userdata);
 
 	return rv;
 }
