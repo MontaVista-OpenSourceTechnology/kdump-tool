@@ -261,6 +261,814 @@ copy_elf_notes(struct elfc *out, struct elfc *in)
 	return 0;
 }
 
+static unsigned int
+val_to_shift(uint64_t val)
+{
+	unsigned int shift = 0;
+	if (!val)
+		return 0;
+	while (!(val & 1)) {
+		shift++;
+		val >>= 1;
+	}
+	return shift;
+}
+
+static struct page_range *
+find_pfn_range(struct kdt_data *d, uint64_t pfn)
+{
+	struct page_range *range;
+
+	list_for_each_item(&d->page_maps, range, struct page_range, link) {
+		if ((pfn >= range->start_page) &&
+		    (pfn < range->start_page + range->nr_pages))
+			return range;
+	}
+	return NULL;
+}
+
+static struct page_range *
+find_page_addr_range(struct kdt_data *d, GElf_Addr addr)
+{
+	struct page_range *range;
+
+	list_for_each_item(&d->page_maps, range, struct page_range, link) {
+		if ((addr >= range->mapaddr) &&
+		    (addr < range->mapaddr + (d->size_page * range->nr_pages)))
+			return range;
+	}
+	return NULL;
+}
+
+static int
+page_addr_mark_free(struct kdt_data *d, GElf_Addr addr, unsigned int count)
+{
+	struct page_range *range;
+	uint64_t pfno;
+
+	range = find_page_addr_range(d, addr);
+	if (!range)
+		return -1;
+
+	pfno = (addr - range->mapaddr) / d->size_page;
+
+	printf("Marking free: %llu (%d)\n",
+	       (unsigned long long) pfno + range->start_page,
+	       count);
+	while (count) {
+		if (pfno >= range->nr_pages) {
+			fprintf(stderr, "Page free maps are insane\n");
+			return -1;
+		}
+		range->bitmap[pfno / 8] |= (1 << (pfno % 8));
+		pfno++;
+		count--;
+	}
+	return 0;
+}
+
+static bool
+is_pfn_free(struct kdt_data *d, struct page_range *range, uint64_t pfn)
+{
+	pfn -= range->start_page;
+	return (range->bitmap[pfn / 8] && (1 << (pfn % 8)));
+}
+
+struct vfetchinfo {
+	unsigned char *out;
+	GElf_Addr addr;
+	unsigned int len;
+};
+
+static int
+vfetch_page_handler(struct elfc *elf,
+		    GElf_Addr paddr,
+		    GElf_Addr vaddr,
+		    GElf_Addr pgsize,
+		    void *userdata)
+{
+	struct vfetchinfo *d = userdata;
+	GElf_Addr offset = d->addr - vaddr;
+	unsigned int len = d->len;
+	int rv;
+
+	if ((offset + len) > pgsize)
+		len = pgsize - offset;
+
+	rv = elfc_read_pmem(elf, paddr + offset, d->out, len);
+	if (rv) {
+		printf("Error reading physical memory at %llx: %s\n",
+		       (unsigned long long) paddr + offset,
+		       strerror(elfc_get_errno(elf)));
+		return -1;
+	}
+	d->out += len;
+	d->len -= len;
+	d->addr += len;
+	return 0;
+}
+
+/*
+ * Fetch data from a virtual address using page tables, not elf header
+ * virtual addresses.
+ */
+static int
+fetch_vaddr_data(struct elfc *elf, GElf_Addr pgd,
+		 struct archinfo *arch, void *arch_data,
+		 GElf_Addr addr, unsigned int len, void *out)
+{
+	struct vfetchinfo d;
+
+	d.out = out;
+	d.addr = addr;
+	d.len = len;
+	return arch->walk_page_table(elf, pgd, addr, addr + len - 1,
+				     arch_data, vfetch_page_handler, &d);
+}
+
+static int
+fetch_struct32(struct kdt_data *d,
+	       unsigned char *data, unsigned int data_size,
+	       uint32_t offset, uint32_t *out,
+	       char *name)
+{
+	if (data_size < offset + 4) {
+		fprintf(stderr, "Data item %s outside of structure\n", name);
+		return -1;
+	}
+
+	*out = d->conv32(data + offset);
+	return 0;
+}
+
+static int
+fetch_struct64(struct kdt_data *d,
+	       unsigned char *data, unsigned int data_size,
+	       uint32_t offset, uint64_t *out,
+	       char *name)
+{
+	if (data_size < offset + 8) {
+		fprintf(stderr, "Data item %s outside of structure\n", name);
+		return -1;
+	}
+
+	*out = d->conv64(data + offset);
+	return 0;
+}
+
+static int
+fetch_structlong(struct kdt_data *d,
+		 unsigned char *data, unsigned int data_size,
+		 uint32_t offset, uint64_t *out,
+		 char *name)
+{
+	int rv;
+
+	if (d->is_64bit) {
+		uint64_t val;
+		rv = fetch_struct64(d, data, data_size, offset, &val, name);
+		if (rv == 0)
+			*out = val;
+	} else {
+		uint32_t val;
+		rv = fetch_struct32(d, data, data_size, offset, &val, name);
+		if (rv == 0)
+			*out = val;
+	}
+
+	return rv;
+}
+
+static int
+find_page_by_pfn(struct kdt_data *d, struct page_range *range, uint64_t pfn,
+		 struct page_info *page)
+{
+	int rv;
+	GElf_Addr offset;
+	
+	if (!range)
+		return -1;
+
+	offset = range->mapaddr + ((pfn - range->start_page) * d->size_page);
+	rv = fetch_vaddr_data(d->elf, d->pgd, d->arch, d->arch_data,
+			      offset, d->size_page, d->pagedata);
+	if (rv == -1)
+		goto out_err;
+
+	rv = fetch_structlong(d, d->pagedata, d->size_page,
+			      d->page_flags_offset,
+			      &page->flags, "page.flags");
+	if (rv == -1)
+		goto out_err;
+	rv = fetch_struct32(d, d->pagedata, d->size_page,
+			    d->page_count_offset,
+			    &page->count, "page.count");
+	if (rv == -1)
+		goto out_err;
+	rv = fetch_structlong(d, d->pagedata, d->size_page,
+			      d->page_mapping_offset,
+			      &page->mapping, "page.mapping");
+	if (rv == -1)
+		goto out_err;
+	rv = fetch_structlong(d, d->pagedata, d->size_page,
+			      d->page_lru_offset,
+			      &(page->lru[0]), "page.lru.next");
+	if (rv == -1)
+		goto out_err;
+	rv = fetch_structlong(d, d->pagedata, d->size_page,
+			      d->page_lru_offset + d->ptrsize,
+			      &(page->lru[1]), "page.lru.prev");
+	if (rv == -1)
+		goto out_err;
+	rv = fetch_struct32(d, d->pagedata, d->size_page,
+			    d->page_mapcount_offset,
+			    &page->mapcount, "page.mapcount");
+	if (rv == -1)
+		goto out_err;
+	rv = fetch_structlong(d, d->pagedata, d->size_page,
+			      d->page_private_offset,
+			      &page->private, "page.private");
+	if (rv == -1)
+		goto out_err;
+out_err:
+	return rv;
+}
+
+static uint64_t convbe64toh(void *in)
+{
+	return be64toh(*((uint64_t *) in));
+}
+static uint64_t convle64toh(void *in)
+{
+	return le64toh(*((uint64_t *) in));
+}
+static uint32_t convbe32toh(void *in)
+{
+	return be32toh(*((uint32_t *) in));
+}
+static uint32_t convle32toh(void *in)
+{
+	return le32toh(*((uint32_t *) in));
+}
+
+enum page_map_vmci {
+	VMCI_PAGESIZE,
+	VMCI_SIZE_list_head,
+	VMCI_OFFSET_list_head__next,
+	VMCI_OFFSET_list_head__prev,
+	VMCI_SYMBOL_mem_map,
+	VMCI_SYMBOL_contig_page_data,
+	VMCI_SYMBOL_mem_section,
+	VMCI_LENGTH_mem_section,
+	VMCI_SIZE_mem_section,
+	VMCI_OFFSET_mem_section__section_mem_map,
+	VMCI_SIZE_page,
+	VMCI_OFFSET_page__flags,
+	VMCI_OFFSET_page___count,
+	VMCI_OFFSET_page__mapping,
+	VMCI_OFFSET_page__lru,
+	VMCI_OFFSET_page___mapcount,
+	VMCI_OFFSET_page__private,
+	VMCI_NUMBER_PAGE_BUDDY_MAPCOUNT_VALUE,
+	VMCI_NUMBER_NR_FREE_PAGES,
+	VMCI_NUMBER_PG_lru,
+	VMCI_NUMBER_PG_private,
+	VMCI_NUMBER_PG_swapcache,
+	VMCI_NUMBER_PG_slab,
+	VMCI_SIZE_pglist_data,
+	VMCI_OFFSET_pglist_data__node_zones,
+	VMCI_OFFSET_pglist_data__nr_zones,
+	VMCI_OFFSET_pglist_data__node_mem_map,
+	VMCI_OFFSET_pglist_data__node_start_pfn,
+	VMCI_OFFSET_pglist_data__node_spanned_pages,
+	VMCI_OFFSET_pglist_data__node_id,
+	VMCI_SIZE_zone,
+	VMCI_OFFSET_zone__vm_stat,
+	VMCI_OFFSET_zone__spanned_pages,
+	VMCI_OFFSET_zone__free_area,
+	VMCI_LENGTH_zone__free_area,
+	VMCI_SIZE_free_area,
+	VMCI_OFFSET_free_area__free_list,
+	VMCI_LENGTH_free_area__free_list,
+	NR_PAGE_MAP_VMCI
+};
+
+#define _VMCI_CHECK_FOUND(vmci, fullname)				\
+	({if (!vmci[VMCI_ ## fullname].found) {		\
+		fprintf(stderr, "Error: %s not in vmcore\n", #fullname); \
+		return -1;						      \
+	}})
+#define VMCI_CHECK_FOUND(vmci, type, name)				\
+	_VMCI_CHECK_FOUND(vmci, type ## _ ## name)
+
+static unsigned char *
+read_pglist(struct kdt_data *d, struct vmcoreinfo_data *vmci,
+	    GElf_Addr pglist_addr)
+{
+	int rv;
+	unsigned char *pglist = NULL;
+	uint64_t pglist_size = vmci[VMCI_SIZE_pglist_data].val;
+
+	pglist = malloc(pglist_size);
+	if (!pglist) {
+		fprintf(stderr, "Could not allocate pglist data, size was"
+			" %lld bytes\n", (unsigned long long) pglist_size);
+		return NULL;
+	}
+
+	rv = fetch_vaddr_data(d->elf, d->pgd, d->arch, d->arch_data,
+			      pglist_addr, pglist_size, pglist);
+	if (rv == -1) {
+		fprintf(stderr, "Could not fetch pglist data at %llx\n",
+			(unsigned long long) pglist_addr);
+		free(pglist);
+		pglist = NULL;
+	}
+
+	return pglist;
+}
+
+static int
+add_page_range(struct kdt_data *d, struct vmcoreinfo_data *vmci,
+	       GElf_Addr map, uint64_t start, uint64_t count)
+{
+	struct page_range *range;
+
+	range = malloc(sizeof(*range));
+	if (!range) {
+		fprintf(stderr, "Out of memory allocating page range\n");
+		return -1;
+	}
+
+	range->start_page = start;
+	range->nr_pages = count;
+	range->mapaddr = map;
+	range->bitmap = malloc(divide_round_up(count, 8));
+	if (!range->bitmap) {
+		free(range);
+		fprintf(stderr, "Out of memory allocating page bitmap\n");
+		return -1;
+	}
+	memset(range->bitmap, 0, divide_round_up(count, 8));
+	list_add_last(&d->page_maps, &range->link);
+	return 0;
+}
+
+static int64_t
+process_free_list(struct kdt_data *d, unsigned int order, unsigned char *list)
+{
+	GElf_Addr head_next;
+	GElf_Addr next;
+	unsigned char link[16];
+	int rv;
+	int64_t count = 0;
+
+	rv = fetch_structlong(d, list, d->list_head_size,
+			      d->list_head_next_offset,
+			      &head_next, "free_list.head_next");
+	if (rv == -1)
+		return -1;
+
+	next = head_next;
+	for (;;) {
+		GElf_Addr page_offset = next - d->page_lru_offset;
+
+		rv = fetch_vaddr_data(d->elf, d->pgd, d->arch, d->arch_data,
+				      next, d->list_head_size, link);
+		if (rv == -1)
+			return -1;
+
+		rv = fetch_structlong(d, link, d->list_head_size,
+				      d->list_head_next_offset,
+				      &next, "free_list.next");
+		if (rv == -1)
+			return -1;
+
+		if (next == head_next)
+			break;
+
+		page_addr_mark_free(d, page_offset, 1 << order);
+		count += (1 << order);
+	}
+
+	return count;
+}
+
+static int64_t
+process_free_area_free_lists(struct kdt_data *d, unsigned int order,
+			     unsigned char *free_area)
+{
+	uint32_t i;
+	int rv;
+	int64_t count = 0;
+
+	for (i = 0; i < d->free_list_length; i++) {
+		rv = process_free_list(d, order, free_area +
+				       d->free_list_offset +
+				       (d->list_head_size * i));
+		if (rv == -1)
+			return -1;
+		count += rv;
+	}
+
+	return count;
+}
+
+static int64_t
+process_zone_free_lists(struct kdt_data *d, unsigned char *zone)
+{
+	uint32_t i;
+	int rv;
+	int64_t count = 0;
+
+	for (i = 0; i < d->free_area_length; i++) {
+		rv = process_free_area_free_lists(d, i, zone +
+						  d->free_area_offset +
+						  (d->free_area_size * i));
+		if (rv == -1)
+			return -1;
+		count += rv;
+	}
+	return count;
+}
+
+static int64_t
+process_pglist_free_lists(struct kdt_data *d, unsigned char *pglist)
+{
+	uint32_t count;
+	uint32_t i;
+	int rv;
+	int64_t total = 0;
+
+	rv = fetch_struct32(d, pglist, d->pglist_data_size,
+			    d->nr_zones_offset,
+			    &count, "pglist.nr_zones");
+	if (rv == -1)
+		return -1;
+
+	for (i = 0; i < count; i++) {
+		rv = process_zone_free_lists(d, pglist + d->node_zones_offset +
+					     (d->zone_size * i));
+		if (rv == -1)
+			return -1;
+		total += rv;
+	}
+
+	printf("Found %lld free pages\n", (long long) total);
+	return 0;
+}
+
+static int
+read_flat_page_maps(struct kdt_data *d, struct vmcoreinfo_data *vmci)
+{
+	int rv;
+	unsigned char *pglist;
+	uint64_t node_start_pfn;
+	uint64_t node_spanned_pages;
+	uint64_t node_mem_map;
+
+	printf("Flat\n");
+
+	VMCI_CHECK_FOUND(vmci, SYMBOL, contig_page_data);
+	VMCI_CHECK_FOUND(vmci, OFFSET, pglist_data__node_mem_map);
+
+	pglist = read_pglist(d, vmci, vmci[VMCI_SYMBOL_contig_page_data].val);
+	if (!pglist)
+		return -1;
+
+	rv = fetch_structlong(d, pglist, d->pglist_data_size,
+			      vmci[VMCI_OFFSET_pglist_data__node_start_pfn].val,
+			      &node_start_pfn, "node_start_pfn");
+	if (rv == -1)
+		goto out_err;
+
+	rv = fetch_structlong(d, pglist, d->pglist_data_size,
+			 vmci[VMCI_OFFSET_pglist_data__node_spanned_pages].val,
+			      &node_spanned_pages, "node_spanned_pages");
+	if (rv == -1)
+		goto out_err;
+
+	rv = fetch_structlong(d, pglist, d->pglist_data_size,
+			      vmci[VMCI_OFFSET_pglist_data__node_mem_map].val,
+			      &node_mem_map, "node_mem_map");
+	if (rv == -1)
+		goto out_err;
+
+	rv = add_page_range(d, vmci, node_mem_map, node_start_pfn,
+			    node_spanned_pages);
+	if (rv == -1)
+		goto out_err;
+	
+	rv = process_pglist_free_lists(d, pglist);
+	if (rv == -1)
+		goto out_err;
+	
+out_err:
+	free(pglist);
+	return rv;
+}
+
+static int
+process_mem_section(struct kdt_data *d, uint64_t sectionnr,
+		    unsigned char *section)
+{
+	int rv;
+	struct page_range *range;
+	uint64_t section_mem_map;
+
+	rv = fetch_structlong(d, section, d->mem_section_size,
+			      d->section_mem_map_offset,
+			      &section_mem_map, "section_mem_map");
+	if (rv == -1)
+		return -1;
+
+	if (!(section_mem_map & SECTION_HAS_MEM_MAP))
+		return 0;
+
+	section_mem_map &= SECTION_MAP_MASK;
+
+	range = malloc(sizeof(*range));
+	if (!range) {
+		fprintf(stderr, "Out of memory allocating page range\n");
+		return -1;
+	}
+
+	range->start_page = sectionnr * d->pages_per_section;
+	range->nr_pages = d->pages_per_section;
+	range->mapaddr = section_mem_map + (range->start_page * d->size_page);
+	range->bitmap = malloc(divide_round_up(d->pages_per_section, 8));
+	if (!range->bitmap) {
+		free(range);
+		fprintf(stderr, "Out of memory allocating page bitmap\n");
+		return -1;
+	}
+	memset(range->bitmap, 0, divide_round_up(d->pages_per_section, 8));
+	list_add_last(&d->page_maps, &range->link);
+	return 0;
+}
+
+static int
+read_sparse_maps(struct kdt_data *d, struct vmcoreinfo_data *vmci, bool extreme)
+{
+	int rv;
+	unsigned int i, j;
+	unsigned char *mem_sections = NULL;
+	unsigned int mem_sections_size;
+	unsigned char *sections = NULL;
+	unsigned int sections_size;
+	unsigned char *pglist;
+
+	printf("Sparse %d %s\n", extreme, extreme ? "extreme" : "static");
+
+	d->pages_per_section = 1 << (d->section_size_bits - d->page_shift);
+	if (extreme) {
+		mem_sections_size = d->mem_section_length * d->ptrsize;
+		d->sections_per_root = d->page_size / d->mem_section_size;
+		sections_size = (d->mem_section_size * d->sections_per_root);
+		sections = malloc(sections_size);
+		if (!sections) {
+			fprintf(stderr, "Could not allocate section\n");
+			rv = -1;
+			goto out_err;
+		}
+	} else {
+		mem_sections_size = d->mem_section_length * d->mem_section_size;
+		d->sections_per_root = 1;
+	}
+
+	mem_sections = malloc(mem_sections_size);
+	if (!mem_sections) {
+		fprintf(stderr, "Could not allocate mem section\n");
+		return -1;
+	}
+
+	rv = fetch_vaddr_data(d->elf, d->pgd, d->arch, d->arch_data,
+			      vmci[VMCI_SYMBOL_mem_section].val,
+			      mem_sections_size, mem_sections);
+	if (rv == -1)
+		goto out_err;
+
+	for (i = 0; i < d->mem_section_length; i++) {
+		if (extreme) {
+			uint64_t sectionptr;
+			rv = fetch_structlong(d, mem_sections,
+					      mem_sections_size, i * d->ptrsize,
+					      &sectionptr,  "sectionptr");
+			if (rv == -1)
+				goto out_err;
+			if (!sectionptr)
+				continue;
+			rv = fetch_vaddr_data(d->elf, d->pgd, d->arch,
+					      d->arch_data,
+					      sectionptr, sections_size,
+					      sections);
+			if (rv == -1)
+				goto out_err;
+		} else {
+			sections = mem_sections + (i * d->mem_section_size);
+		}
+
+		for (j = 0; j < d->sections_per_root; j++) {
+			rv = process_mem_section
+				(d,
+				 ((uint64_t) i) * d->sections_per_root + j,
+				 sections + (j * d->mem_section_size));
+			if (rv == -1)
+				goto out_err;
+		}	
+	}
+
+	VMCI_CHECK_FOUND(vmci, SYMBOL, contig_page_data);
+	pglist = read_pglist(d, vmci, vmci[VMCI_SYMBOL_contig_page_data].val);
+	if (!pglist)
+		return -1;
+	rv = process_pglist_free_lists(d, pglist);
+
+	free(pglist);
+
+out_err:
+	if (mem_sections)
+		free(mem_sections);
+	if (extreme && sections)
+		free(sections);
+	return rv;
+}
+
+static int
+read_discontig_maps(struct kdt_data *d, struct vmcoreinfo_data *vmci)
+{
+	printf("Discon\n");
+	return 0;
+}
+
+static int
+read_page_maps(struct kdt_data *d)
+{
+	struct vmcoreinfo_data vmci[] = {
+		VMCI_PAGESIZE(),
+		VMCI_SIZE(list_head),
+		VMCI_OFFSET(list_head, next),
+		VMCI_OFFSET(list_head, prev),
+		VMCI_SYMBOL(mem_map),
+		VMCI_SYMBOL(contig_page_data),
+		VMCI_SYMBOL(mem_section),
+		VMCI_LENGTH(mem_section),
+		VMCI_SIZE(mem_section),
+		VMCI_OFFSET(mem_section, section_mem_map),
+		VMCI_SIZE(page),
+		VMCI_OFFSET(page, flags),
+		VMCI_OFFSET(page, _count),
+		VMCI_OFFSET(page, mapping),
+		VMCI_OFFSET(page, lru),
+		VMCI_OFFSET(page, _mapcount),
+		VMCI_OFFSET(page, private),
+		VMCI_NUMBER(PAGE_BUDDY_MAPCOUNT_VALUE),
+		VMCI_NUMBER(NR_FREE_PAGES),
+		VMCI_NUMBER(PG_lru),
+		VMCI_NUMBER(PG_private),
+		VMCI_NUMBER(PG_swapcache),
+		VMCI_NUMBER(PG_slab),
+		VMCI_SIZE(pglist_data),
+		VMCI_OFFSET(pglist_data, node_zones),
+		VMCI_OFFSET(pglist_data, nr_zones),
+		VMCI_OFFSET(pglist_data, node_mem_map), /* FLAT_NODE_MEM_MAP */
+		VMCI_OFFSET(pglist_data, node_start_pfn),
+		VMCI_OFFSET(pglist_data, node_spanned_pages),
+		VMCI_OFFSET(pglist_data, node_id),
+		VMCI_SIZE(zone),
+		VMCI_OFFSET(zone, free_area),
+		VMCI_SLENGTH(zone, free_area),
+		VMCI_OFFSET(zone, vm_stat),
+		VMCI_OFFSET(zone, spanned_pages),
+		VMCI_SIZE(free_area),
+		VMCI_OFFSET(free_area, free_list),
+		VMCI_SLENGTH(free_area, free_list),
+		{ NULL }
+	};
+	int rv = -1;
+
+	list_init(&d->page_maps);
+
+	handle_vminfo_notes(d->elf, vmci);
+
+	d->is_bigendian = elfc_getencoding(d->elf) == ELFDATA2MSB;
+	if (d->is_bigendian) {
+		d->conv32 = convbe32toh;
+		d->conv64 = convbe64toh;
+	} else {
+		d->conv32 = convle32toh;
+		d->conv64 = convle64toh;
+	}
+
+	VMCI_CHECK_FOUND(vmci, SIZE, list_head);
+	d->list_head_size = vmci[VMCI_SIZE_list_head].val;
+	if (d->list_head_size == 8) {
+		d->is_64bit = false;
+		d->ptrsize = 4;
+	} else if (d->list_head_size == 16) {
+		d->is_64bit = true;
+		d->ptrsize = 8;
+	} else {
+		fprintf(stderr, "Error: list_head size not valid: %llu\n",
+			(unsigned long long) vmci[VMCI_SIZE_list_head].val);
+		return -1;
+	}
+	VMCI_CHECK_FOUND(vmci, OFFSET, list_head__next);
+	d->list_head_next_offset = vmci[VMCI_OFFSET_list_head__next].val;
+	VMCI_CHECK_FOUND(vmci, OFFSET, list_head__prev);
+	d->list_head_prev_offset = vmci[VMCI_OFFSET_list_head__prev].val;
+
+	_VMCI_CHECK_FOUND(vmci, PAGESIZE);
+	d->page_size = vmci[VMCI_PAGESIZE].val;
+	d->page_shift = val_to_shift(d->page_size);
+	d->pagedata = malloc(d->page_size);
+	if (!d->pagedata) {
+		fprintf(stderr, "Error: Out of memory allocating page data\n");
+		return -1;
+	}
+
+	VMCI_CHECK_FOUND(vmci, NUMBER, PAGE_BUDDY_MAPCOUNT_VALUE);
+	d->buddy_mapcount = vmci[VMCI_NUMBER_PAGE_BUDDY_MAPCOUNT_VALUE].val;
+	VMCI_CHECK_FOUND(vmci, NUMBER, NR_FREE_PAGES);
+	d->NR_FREE_PAGES = vmci[VMCI_NUMBER_NR_FREE_PAGES].val;
+	VMCI_CHECK_FOUND(vmci, NUMBER, PG_lru);
+	d->PG_lru = 1ULL << vmci[VMCI_NUMBER_PG_lru].val;
+	VMCI_CHECK_FOUND(vmci, NUMBER, PG_private);
+	d->PG_private = 1ULL << vmci[VMCI_NUMBER_PG_private].val;
+	VMCI_CHECK_FOUND(vmci, NUMBER, PG_swapcache);
+	d->PG_swapcache = 1ULL << vmci[VMCI_NUMBER_PG_swapcache].val;
+	VMCI_CHECK_FOUND(vmci, NUMBER, PG_slab);
+	d->PG_slab = 1ULL << vmci[VMCI_NUMBER_PG_slab].val;
+
+	VMCI_CHECK_FOUND(vmci, SIZE, page);
+	d->size_page = vmci[VMCI_SIZE_page].val;
+
+	VMCI_CHECK_FOUND(vmci, OFFSET, page__flags);
+	d->page_flags_offset = vmci[VMCI_OFFSET_page__flags].val;
+	VMCI_CHECK_FOUND(vmci, OFFSET, page___count);
+	d->page_count_offset = vmci[VMCI_OFFSET_page___count].val;
+	VMCI_CHECK_FOUND(vmci, OFFSET, page__mapping);
+	d->page_mapping_offset = vmci[VMCI_OFFSET_page__mapping].val;
+	VMCI_CHECK_FOUND(vmci, OFFSET, page__lru);
+	d->page_lru_offset = vmci[VMCI_OFFSET_page__lru].val;
+	VMCI_CHECK_FOUND(vmci, OFFSET, page___mapcount);
+	d->page_mapcount_offset = vmci[VMCI_OFFSET_page___mapcount].val;
+	VMCI_CHECK_FOUND(vmci, OFFSET, page__private);
+	d->page_private_offset = vmci[VMCI_OFFSET_page__private].val;
+
+	VMCI_CHECK_FOUND(vmci, SIZE, pglist_data);
+	d->pglist_data_size = vmci[VMCI_SIZE_pglist_data].val;
+	VMCI_CHECK_FOUND(vmci, OFFSET, pglist_data__node_zones);
+	d->node_zones_offset = vmci[VMCI_OFFSET_pglist_data__node_zones].val;
+	VMCI_CHECK_FOUND(vmci, OFFSET, pglist_data__nr_zones);
+	d->nr_zones_offset = vmci[VMCI_OFFSET_pglist_data__nr_zones].val;
+	VMCI_CHECK_FOUND(vmci, OFFSET, pglist_data__node_start_pfn);
+	VMCI_CHECK_FOUND(vmci, OFFSET, pglist_data__node_spanned_pages);
+	VMCI_CHECK_FOUND(vmci, OFFSET, pglist_data__node_id);
+
+	VMCI_CHECK_FOUND(vmci, SIZE, zone);
+	d->zone_size = vmci[VMCI_SIZE_zone].val;
+	VMCI_CHECK_FOUND(vmci, OFFSET, zone__free_area);
+	d->free_area_offset = vmci[VMCI_OFFSET_zone__free_area].val;
+	VMCI_CHECK_FOUND(vmci, OFFSET, free_area__free_list);
+	d->free_list_offset = vmci[VMCI_OFFSET_free_area__free_list].val;
+	VMCI_CHECK_FOUND(vmci, LENGTH, zone__free_area);
+	d->free_area_length = vmci[VMCI_LENGTH_zone__free_area].val;
+	VMCI_CHECK_FOUND(vmci, LENGTH, free_area__free_list);
+	d->free_list_length = vmci[VMCI_LENGTH_free_area__free_list].val;
+
+	VMCI_CHECK_FOUND(vmci, SIZE, free_area);
+	d->free_area_size = vmci[VMCI_SIZE_free_area].val;
+
+	if (!vmci[VMCI_SYMBOL_mem_map].found) {
+		/* Discontiguous memory */
+		rv = read_discontig_maps(d, vmci);
+	} else if (vmci[VMCI_SYMBOL_mem_section].found) {
+		bool is_sparse_extreme;
+		/* Sparse memory */
+
+		VMCI_CHECK_FOUND(vmci, SIZE, mem_section);
+		d->mem_section_size = vmci[VMCI_SIZE_mem_section].val;
+		VMCI_CHECK_FOUND(vmci, LENGTH, mem_section);
+		d->mem_section_length = vmci[VMCI_LENGTH_mem_section].val;
+		VMCI_CHECK_FOUND(vmci, OFFSET, mem_section__section_mem_map);
+		d->section_mem_map_offset =
+			vmci[VMCI_OFFSET_mem_section__section_mem_map].val;
+
+		if (d->mem_section_length ==
+		    ((1 << (d->max_physmem_bits - d->section_size_bits)) /
+		     (d->page_size / d->mem_section_size)))
+			is_sparse_extreme = true;
+		else
+			is_sparse_extreme = false;
+		rv = read_sparse_maps(d, vmci, is_sparse_extreme);
+	} else {
+		/* Flat Memory */
+		rv = read_flat_page_maps(d, vmci);
+	}
+	return rv;
+}
+
 static int
 topelf(int argc, char *argv[])
 {
@@ -283,11 +1091,11 @@ topelf(int argc, char *argv[])
 	};
 	int ofd = 1;
 	int rv = 0;
-	struct elfc *elf = NULL;
 	struct vmcoreinfo_data vmci[] = {
 		{ "ADDRESS(phys_pgd_ptr)", 16 },
 		{ NULL }
 	};
+	struct kdt_data kdt_data, *d = &kdt_data;
 
 	for (;;) {
 		int curr_optind = optind;
@@ -317,13 +1125,14 @@ topelf(int argc, char *argv[])
 		subcmd_usage("Too many arguments, starting at %s\n",
 			     argv[optind]);
 
-	elf = read_oldmem(oldmem, vmcore);
-	if (!elf)
+	d->elf = read_oldmem(oldmem, vmcore);
+	if (!d->elf)
 		goto out_err;
 
-	handle_vminfo_notes(elf, vmci);
+	handle_vminfo_notes(d->elf, vmci);
 	if (!vmci[0].found)
 		fprintf(stderr, "Warning: phys pgd ptr not in vmcore\n");
+	d->pgd = vmci[0].val;
 
 	if (outfile) {
 		ofd = creat(outfile, 0644);
@@ -334,18 +1143,18 @@ topelf(int argc, char *argv[])
 		}
 	}
 
-	elfc_set_fd(elf, ofd);
+	elfc_set_fd(d->elf, ofd);
 
-	rv = elfc_write(elf);
+	rv = elfc_write(d->elf);
 	if (rv == -1) {
 		fprintf(stderr, "Error writing elfc file: %s\n",
-			strerror(elfc_get_errno(elf)));
+			strerror(elfc_get_errno(d->elf)));
 		goto out_err;
 	}
 
 out:
-	if (elf)
-		elfc_free(elf);
+	if (d->elf)
+		elfc_free(d->elf);
 	if ((ofd != -1) && (ofd != 1))
 		close(ofd);
 	return rv;
@@ -356,7 +1165,6 @@ out_err:
 }
 
 struct velf_data {
-	struct elfc *pelf;
 	GElf_Off pelf_base;
 	struct elfc *velf;
 	GElf_Off velf_base;
@@ -367,13 +1175,16 @@ struct velf_data {
 	GElf_Addr last_pgsize;
 	int prev_present;
 	int prev_pnum;
+
+	struct kdt_data *d;
 };
 
 static int
 velf_do_write(struct elfc *e, int fd, GElf_Phdr *phdr, void *data,
 	      void *userdata)
 {
-	struct velf_data *d = userdata;
+	struct velf_data *dpage = userdata;
+	struct kdt_data *d = dpage->d;
 	int rv;
 	GElf_Off addr = phdr->p_paddr;
 	size_t size = phdr->p_filesz;
@@ -391,9 +1202,9 @@ velf_do_write(struct elfc *e, int fd, GElf_Phdr *phdr, void *data,
 	while (size) {
 		if (buf_size > size)
 			buf_size = size;
-		rv = elfc_read_pmem(d->pelf, addr, buf, buf_size);
+		rv = elfc_read_pmem(d->elf, addr, buf, buf_size);
 		if (rv == -1) {
-			errno = elfc_get_errno(d->pelf);
+			errno = elfc_get_errno(d->elf);
 			goto out_err;
 		}
 		rv = write(fd, buf, buf_size);
@@ -418,7 +1229,8 @@ velf_get_data(struct elfc *e, GElf_Phdr *phdr, void *data,
 	      GElf_Off off, void *odata, size_t len,
 	      void *userdata)
 {
-	struct velf_data *d = userdata;
+	struct velf_data *dpage = userdata;
+	struct kdt_data *d = dpage->d;
 	int rv;
 
 	if ((off > phdr->p_filesz) || ((off + len) > phdr->p_filesz)) {
@@ -426,9 +1238,9 @@ velf_get_data(struct elfc *e, GElf_Phdr *phdr, void *data,
 		return -1;
 	}
 
-	rv = elfc_read_pmem(d->pelf, phdr->p_paddr + off, odata, len);
+	rv = elfc_read_pmem(d->elf, phdr->p_paddr + off, odata, len);
 	if (rv == -1) {
-		errno = elfc_get_errno(d->pelf);
+		errno = elfc_get_errno(d->elf);
 		return -1;
 	}
 
@@ -440,7 +1252,8 @@ velf_set_data(struct elfc *e, GElf_Phdr *phdr, void *data,
 	      GElf_Off off, const void *idata, size_t len,
 	      void *userdata)
 {
-	struct velf_data *d = userdata;
+	struct velf_data *dpage = userdata;
+	struct kdt_data *d = dpage->d;
 	int rv;
 
 	if ((off > phdr->p_filesz) || ((off + len) > phdr->p_filesz)) {
@@ -448,9 +1261,9 @@ velf_set_data(struct elfc *e, GElf_Phdr *phdr, void *data,
 		return -1;
 	}
 
-	rv = elfc_write_pmem(d->pelf, phdr->p_paddr + off, idata, len);
+	rv = elfc_write_pmem(d->elf, phdr->p_paddr + off, idata, len);
 	if (rv == -1) {
-		errno = elfc_get_errno(d->pelf);
+		errno = elfc_get_errno(d->elf);
 		return -1;
 	}
 
@@ -458,29 +1271,29 @@ velf_set_data(struct elfc *e, GElf_Phdr *phdr, void *data,
 }
 
 static int
-gen_new_phdr(struct elfc *pelf, struct velf_data *d)
+gen_new_phdr(struct elfc *pelf, struct velf_data *dpage)
 {
 	int rv;
 
-	rv = elfc_add_phdr(d->velf, PT_LOAD,
-			   d->start_vaddr,
-			   d->start_paddr,
-			   d->next_paddr - d->start_paddr,
-			   d->next_paddr - d->start_paddr,
+	rv = elfc_add_phdr(dpage->velf, PT_LOAD,
+			   dpage->start_vaddr,
+			   dpage->start_paddr,
+			   dpage->next_paddr - dpage->start_paddr,
+			   dpage->next_paddr - dpage->start_paddr,
 			   PF_R | PF_W | PF_X,
-			   d->last_pgsize);
+			   dpage->last_pgsize);
 	if (rv == -1) {
 		fprintf(stderr, "Unable to add phdr: %s\n",
-			strerror(elfc_get_errno(d->velf)));
+			strerror(elfc_get_errno(dpage->velf)));
 		return -1;
 	}
-	rv = elfc_set_phdr_data(d->velf, rv, NULL,
+	rv = elfc_set_phdr_data(dpage->velf, rv, NULL,
 				NULL, NULL, velf_do_write, NULL,
 				velf_get_data, velf_set_data,
-				d);
+				dpage);
 	if (rv) {
 		fprintf(stderr, "Unable to set phdr data: %s\n",
-			strerror(elfc_get_errno(d->velf)));
+			strerror(elfc_get_errno(dpage->velf)));
 		return -1;
 	}
 
@@ -494,11 +1307,40 @@ velf_page_handler(struct elfc *pelf,
 		  GElf_Addr pgsize,
 		  void *userdata)
 {
-	struct velf_data *d = userdata;
+	struct velf_data *dpage = userdata;
+	struct kdt_data *d = dpage->d;
 	GElf_Off dummy;
 	int pnum, present, rv;
+	uint64_t pfn;
+	struct page_range *range;
+	struct page_info page;
 
-	present = elfc_pmem_offset(d->pelf, paddr, pgsize, &pnum, &dummy) != -1;
+	pfn = paddr >> d->page_shift;
+
+	range = find_pfn_range(d, pfn);
+	if (!range) {
+		printf("Page not present in range, paddr %llx vaddr %llx\n",
+		       (unsigned long long) paddr,
+		       (unsigned long long) vaddr);
+		return 0;
+	}
+
+	if (is_pfn_free(d, range, pfn)) {
+		printf("Skipping free page %llu\n", (unsigned long long) pfn);
+		return 0;
+	}
+	printf("Processing page %llu\n", (unsigned long long) pfn);
+
+
+	rv = find_page_by_pfn(d, range, pfn, &page);
+	if (rv == -1) {
+		printf("Page not present, paddr %llx vaddr %llx\n",
+		       (unsigned long long) paddr,
+		       (unsigned long long) vaddr);
+		return 0;
+	}
+
+	present = elfc_pmem_offset(d->elf, paddr, pgsize, &pnum, &dummy) != -1;
 	/*
 	 * We require entries to be contiguous in physical and virtual
 	 * space to be combined.  We also require them to be in the same
@@ -506,36 +1348,36 @@ velf_page_handler(struct elfc *pelf,
 	 * to have no segments larger than 4GB so the offset remains <
 	 * UINT32_MAX.  Preserve that in the velf file.
 	 */
-	if (d->next_vaddr != vaddr || d->next_paddr != paddr ||
-	    !present || d->prev_pnum != pnum) {
-		if (d->prev_present) {
-			rv = gen_new_phdr(pelf, d);
+	if (dpage->next_vaddr != vaddr || dpage->next_paddr != paddr ||
+	    !present || dpage->prev_pnum != pnum) {
+		if (dpage->prev_present) {
+			rv = gen_new_phdr(pelf, dpage);
 			if (rv == -1)
 				return -1;
 		}
-		d->start_vaddr = vaddr;
-		d->start_paddr = paddr;
+		dpage->start_vaddr = vaddr;
+		dpage->start_paddr = paddr;
 	}
-	if (!d->prev_present) {
-		d->start_vaddr = vaddr;
-		d->start_paddr = paddr;
+	if (!dpage->prev_present) {
+		dpage->start_vaddr = vaddr;
+		dpage->start_paddr = paddr;
 	}
 
-	d->prev_present = present;
-	d->prev_pnum = pnum;
-	d->next_vaddr = vaddr + pgsize;
-	d->next_paddr = paddr + pgsize;
-	d->last_pgsize = pgsize;
+	dpage->prev_present = present;
+	dpage->prev_pnum = pnum;
+	dpage->next_vaddr = vaddr + pgsize;
+	dpage->next_paddr = paddr + pgsize;
+	dpage->last_pgsize = pgsize;
 	return 0;
 }
 
 static int
-velf_cleanup(struct elfc *pelf, struct velf_data *d)
+velf_cleanup(struct elfc *pelf, struct velf_data *dpage)
 {
 	int rv;
 
-	if ((d->next_vaddr - d->last_pgsize) != d->start_vaddr) {
-		rv = gen_new_phdr(pelf, d);
+	if ((dpage->next_vaddr - dpage->last_pgsize) != dpage->start_vaddr) {
+		rv = gen_new_phdr(pelf, dpage);
 		if (rv)
 			return -1;
 	}
@@ -572,19 +1414,18 @@ tovelf(int argc, char *argv[])
 	int fd = -1;
 	int ofd = 1;
 	int rv = 0;
-	GElf_Addr pgd;
+	struct kdt_data kdt_data, *d = &kdt_data;
 	int pgd_set = 0;
-	struct elfc *elf = NULL, *velf = NULL;
+	struct elfc *velf = NULL;
 	struct vmcoreinfo_data vmci[] = {
 		{ "ADDRESS(phys_pgd_ptr)", 16 },
 		{ NULL }
 	};
 	int do_oldmem = 0;
-	struct archinfo *arch = NULL;
-	struct velf_data d;
+	struct velf_data dpage;
 	int elfclass = ELFCLASSNONE;
-	void *arch_data = NULL;
 
+	memset(d, 0, sizeof(*d));
 	for (;;) {
 		int curr_optind = optind;
 		int c = getopt_long(argc, argv, "+ho:i:v:I:P:c:", longopts,
@@ -614,7 +1455,7 @@ tovelf(int argc, char *argv[])
 		case 'P': {
 			char *end;
 
-			pgd = strtoull(optarg, &end, 0);
+			d->pgd = strtoull(optarg, &end, 0);
 			if ((end == optarg) || (*end != '\0'))
 				subcmd_usage("Invalid pgd number: %s\n",
 					     optarg);
@@ -648,8 +1489,8 @@ tovelf(int argc, char *argv[])
 	if (do_oldmem) {
 		if (!infile)
 			infile = DEFAULT_OLDMEM;
-		elf = read_oldmem(infile, vmcore);
-		if (!elf)
+		d->elf = read_oldmem(infile, vmcore);
+		if (!d->elf)
 			goto out_err;
 	} else {
 		if (!infile)
@@ -660,26 +1501,26 @@ tovelf(int argc, char *argv[])
 				strerror(errno));
 			goto out_err;
 		}
-		elf = elfc_alloc();
-		if (!elf) {
+		d->elf = elfc_alloc();
+		if (!d->elf) {
 			fprintf(stderr, "Out of memory allocating elf obj\n");
 			goto out_err;
 		}
-		rv = elfc_open(elf, fd);
+		rv = elfc_open(d->elf, fd);
 		if (rv) {
 			fprintf(stderr, "Unable to elfc open %s: %s\n", infile,
-				strerror(elfc_get_errno(elf)));
+				strerror(elfc_get_errno(d->elf)));
 			goto out_err;
 		}
 		fd = -1;
 	}
 
 	if (!pgd_set) {
-		handle_vminfo_notes(elf, vmci);
+		handle_vminfo_notes(d->elf, vmci);
 		if (vmci[0].found) {
-			pgd = vmci[0].val;
+			d->pgd = vmci[0].val;
 			printf("Found phys pgd ptr = %llx\n",
-			       (unsigned long long) pgd);
+			       (unsigned long long) d->pgd);
 		} else
 			goto nopgd;
 	} else {
@@ -702,65 +1543,71 @@ nopgd:
 		fprintf(stderr, "Out of memory allocating elf obj\n");
 		goto out_err;
 	}
-	rv = elfc_setup(velf, elfc_gettype(elf));
+	rv = elfc_setup(velf, elfc_gettype(d->elf));
 	if (rv == -1) {
 		fprintf(stderr, "Error writing elfc file: %s\n",
-			strerror(elfc_get_errno(elf)));
+			strerror(elfc_get_errno(d->elf)));
 		goto out_err;
 	}
-	elfc_setmachine(velf, elfc_getmachine(elf));
-	elfc_setencoding(velf, elfc_getencoding(elf));
-	copy_elf_notes(velf, elf);
+	elfc_setmachine(velf, elfc_getmachine(d->elf));
+	elfc_setencoding(velf, elfc_getencoding(d->elf));
+	copy_elf_notes(velf, d->elf);
 
-	arch = find_arch(elfc_getmachine(elf));
-	if (!arch) {
+	d->arch = find_arch(elfc_getmachine(d->elf));
+	if (!d->arch) {
 		fprintf(stderr, "Unknown ELF machine in %s: %d\n", infile,
-			elfc_getmachine(elf));
+			elfc_getmachine(d->elf));
 		goto out_err;
 	}
 
 	if (elfclass == ELFCLASSNONE) {
-		elfc_setclass(velf, arch->default_elfclass);
+		elfc_setclass(velf, d->arch->default_elfclass);
 	} else {
 		elfc_setclass(velf, elfclass);
 	}
 
 	elfc_set_fd(velf, ofd);
 
-	rv = arch->setup_arch_pelf(elf, &arch_data);
+	if (d->arch->setup_arch_pelf) {
+		rv = d->arch->setup_arch_pelf(d->elf, d, &d->arch_data);
+		if (rv == -1)
+			goto out_err;
+	}
+
+	rv = read_page_maps(d);
 	if (rv == -1)
 		goto out_err;
 
-	memset(&d, 0, sizeof(d));
-	d.velf = velf;
-	d.pelf = elf;
-	rv = arch->walk_page_table(elf, pgd, 0, ~((GElf_Addr) 0), arch_data,
-				   velf_page_handler, &d);
+	memset(&dpage, 0, sizeof(dpage));
+	dpage.velf = velf;
+	dpage.d = d;
+	rv = d->arch->walk_page_table(d->elf, d->pgd, 0, ~((GElf_Addr) 0),
+				      d->arch_data, velf_page_handler, &dpage);
 	if (rv == -1)
 		goto out_err;
-	rv = velf_cleanup(elf, &d);
+	rv = velf_cleanup(d->elf, &dpage);
 	if (rv == -1)
 		goto out_err;
 
-	d.velf_base = elfc_data_offset_start(velf);
-	d.pelf_base = elfc_data_offset_start(elf);
+	dpage.velf_base = elfc_data_offset_start(velf);
+	dpage.pelf_base = elfc_data_offset_start(d->elf);
 	rv = elfc_write(velf);
 	if (rv == -1) {
 		fprintf(stderr, "Error writing elfc file: %s\n",
-			strerror(elfc_get_errno(elf)));
+			strerror(elfc_get_errno(d->elf)));
 		goto out_err;
 	}
 
 out:
-	if (arch && arch_data)
-		arch->cleanup_arch_data(arch_data);
+	if (d->arch && d->arch_data)
+		d->arch->cleanup_arch_data(d->arch_data);
 	if (fd != -1)
 		close(fd);
 	if (velf)
 		elfc_free(velf);
-	if (elf) {
-		close(elfc_get_fd(elf));
-		elfc_free(elf);
+	if (d->elf) {
+		close(elfc_get_fd(d->elf));
+		elfc_free(d->elf);
 	}
 	if ((ofd != -1) && (ofd != 1))
 		close(ofd);

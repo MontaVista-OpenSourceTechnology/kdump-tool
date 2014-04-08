@@ -348,6 +348,14 @@ int elfc_alloc_read_data(struct elfc *e, GElf_Off off,
 			 void **odata, size_t len);
 
 /*
+ * Convert the given virtual address to a physical address.  The first
+ * one is returned.
+ *
+ * Returns -1 on error, use elfc_get_errno() to get the errno.
+ */
+int elfc_vmem_to_pmem(struct elfc *e, GElf_Addr vaddr, GElf_Addr *paddr);
+
+/*
  * Find the given virtual address in the elf file and copy its contents
  * to odata.
  *

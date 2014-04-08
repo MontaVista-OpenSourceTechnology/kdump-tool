@@ -35,6 +35,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <endian.h>
+#include <malloc.h>
 
 #include "elfc.h"
 
@@ -197,6 +198,35 @@ handle_pdp(struct elfc *pelf, GElf_Addr vaddr, GElf_Addr pdpaddr,
 	return 0;
 }
 
+struct x86_64_data
+{
+	bool dummy;
+};
+
+static int
+x86_64_arch_setup(struct elfc *pelf, struct kdt_data *d, void **arch_data)
+{
+	struct x86_64_data *md;
+
+	md = malloc(sizeof(*md));
+	if (!md) {
+		fprintf(stderr, "Out of memory allocating x86_64 arch data\n");
+		return -1;
+	}
+	memset(md, 0, sizeof(*md));
+
+	d->section_size_bits = 27;
+	d->max_physmem_bits = 46; /* Good for 2.6.31 and later */
+
+	return 0;
+}
+
+static void
+x86_64_arch_cleanup(void *arch_data)
+{
+	free(arch_data);
+}
+
 static int
 x86_64_walk(struct elfc *pelf, GElf_Addr pgd,
 	    GElf_Addr begin_addr, GElf_Addr end_addr, void *arch_data,
@@ -205,8 +235,8 @@ x86_64_walk(struct elfc *pelf, GElf_Addr pgd,
 	uint64_t pml[512];
 	uint64_t i;
 	int rv;
-	uint64_t start = begin_addr >> PAGESHIFT_L1;
-	uint64_t end = end_addr >> PAGESHIFT_L1;
+	uint64_t start = (begin_addr & 0x0000ffffffffffffULL) >> PAGESHIFT_L1;
+	uint64_t end = (end_addr & 0x0000ffffffffffffULL) >> PAGESHIFT_L1;
 
 	begin_addr &= PAGEMASK_L1;
 	end_addr &= PAGEMASK_L1;
@@ -237,5 +267,7 @@ struct archinfo x86_64_arch = {
 	.name = "x86_64",
 	.elfmachine = EM_X86_64,
 	.default_elfclass = ELFCLASS64,
+	.setup_arch_pelf = x86_64_arch_setup,
+	.cleanup_arch_data = x86_64_arch_cleanup,
 	.walk_page_table = x86_64_walk
 };

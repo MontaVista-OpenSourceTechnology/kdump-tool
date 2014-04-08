@@ -56,30 +56,25 @@
  * last.
  */
 enum vmcoreinfo_labels {
-	VMCI__text,
-	VMCI__end,
-	VMCI__phys_to_kernel_offset,
-	VMCI_CKSEG0,
-	VMCI_CKSSEG,
-	VMCI_PHYS_OFFSET,
-	VMCI_PMD_ORDER,
-	VMCI__PAGE_HUGE,
+	VMCI_ADDRESS__text,
+	VMCI_ADDRESS__end,
+	VMCI_ADDRESS__phys_to_kernel_offset,
+	VMCI_ADDRESS_CKSEG0,
+	VMCI_ADDRESS_CKSSEG,
+	VMCI_ADDRESS_PHYS_OFFSET,
+	VMCI_NUMBER_PMD_ORDER,
+	VMCI_NUMBER__PAGE_HUGE,
 	/* Begin required elements. */
-#define VREQ	VMCI_PAGE_SHIFT
-	VMCI_PAGE_SHIFT,
-	VMCI_PGD_ORDER,
-	VMCI_PTE_ORDER,
-	VMCI__PAGE_PRESENT,
-	VMCI__PFN_SHIFT,
-	VMCI_PAGE_OFFSET,
+#define VREQ	VMCI_NUMBER_PAGE_SHIFT
+	VMCI_NUMBER_PAGE_SHIFT,
+	VMCI_NUMBER_PGD_ORDER,
+	VMCI_NUMBER_PTE_ORDER,
+	VMCI_NUMBER__PAGE_PRESENT,
+	VMCI_NUMBER__PFN_SHIFT,
+	VMCI_ADDRESS_PAGE_OFFSET,
 	/* End actual elements. */
 	VMCI_NUM_ELEMENTS
 };
-
-#define VMCI_ADDR(lbl)						\
-	[VMCI_ ## lbl] = { "ADDRESS(" #lbl ")", 16, 0, 0 }
-#define VMCI_NUM(lbl)						\
-	[VMCI_ ## lbl] = { "NUMBER(" #lbl ")", 10, 0, 0 }
 
 static uint64_t convbe64toh(uint64_t val)
 {
@@ -529,33 +524,33 @@ walk_mips64(struct elfc *pelf, const struct mips_walk_data *d,
 }
 
 static int
-mips_arch_setup(struct elfc *pelf, void **arch_data)
+mips_arch_setup(struct elfc *pelf, struct kdt_data *d, void **arch_data)
 {
-	struct mips_walk_data *d;
+	struct mips_walk_data *md;
 	struct vmcoreinfo_data vmci[VMCI_NUM_ELEMENTS + 1] = {
-		VMCI_ADDR(_text),
-		VMCI_ADDR(_end),
-		VMCI_ADDR(_phys_to_kernel_offset),
-		VMCI_ADDR(CKSEG0),
-		VMCI_ADDR(CKSSEG),
-		VMCI_ADDR(PAGE_OFFSET),
-		VMCI_ADDR(PHYS_OFFSET),
-		VMCI_NUM(PMD_ORDER),
-		VMCI_NUM(_PAGE_HUGE),
-		VMCI_NUM(PAGE_SHIFT),
-		VMCI_NUM(PGD_ORDER),
-		VMCI_NUM(PTE_ORDER),
-		VMCI_NUM(_PAGE_PRESENT),
-		VMCI_NUM(_PFN_SHIFT),
+		VMCI_ADDRESS(_text),
+		VMCI_ADDRESS(_end),
+		VMCI_ADDRESS(_phys_to_kernel_offset),
+		VMCI_ADDRESS(CKSEG0),
+		VMCI_ADDRESS(CKSSEG),
+		VMCI_ADDRESS(PAGE_OFFSET),
+		VMCI_ADDRESS(PHYS_OFFSET),
+		VMCI_NUMBER(PMD_ORDER),
+		VMCI_NUMBER(_PAGE_HUGE),
+		VMCI_NUMBER(PAGE_SHIFT),
+		VMCI_NUMBER(PGD_ORDER),
+		VMCI_NUMBER(PTE_ORDER),
+		VMCI_NUMBER(_PAGE_PRESENT),
+		VMCI_NUMBER(_PFN_SHIFT)
 	};
 	int i;
 
-	d = malloc(sizeof(*d));
-	if (!d) {
+	md = malloc(sizeof(*md));
+	if (!md) {
 		fprintf(stderr, "Out of memory allocating mips arch data\n");
 		return -1;
 	}
-	memset(d, 0, sizeof(*d));
+	memset(md, 0, sizeof(*md));
 
 	handle_vminfo_notes(pelf, vmci);
 	for (i = VREQ; vmci[i].name; i++) { 
@@ -566,105 +561,120 @@ mips_arch_setup(struct elfc *pelf, void **arch_data)
 		}
 	}
 
-	d->page_shift = vmci[VMCI_PAGE_SHIFT].val;
-	d->page_size = (1 << d->page_shift);
-	d->pgd_order = vmci[VMCI_PGD_ORDER].val;
-	d->pte_order = vmci[VMCI_PTE_ORDER].val;
-	d->page_present_mask = vmci[VMCI__PAGE_PRESENT].val;
-	d->pfn_shift = vmci[VMCI__PFN_SHIFT].val;
-	d->_PAGE_HUGE = vmci[VMCI__PAGE_HUGE].val; /* Zero if not set */
-	d->PAGE_OFFSET = vmci[VMCI_PAGE_OFFSET].val;
-	d->is_64bit = elfc_getclass(pelf) == ELFCLASS64;
-	d->is_bigendian = elfc_getencoding(pelf) == ELFDATA2MSB;
+	md->page_shift = vmci[VMCI_NUMBER_PAGE_SHIFT].val;
+	md->page_size = (1 << md->page_shift);
+	md->pgd_order = vmci[VMCI_NUMBER_PGD_ORDER].val;
+	md->pte_order = vmci[VMCI_NUMBER_PTE_ORDER].val;
+	md->page_present_mask = vmci[VMCI_NUMBER__PAGE_PRESENT].val;
+	md->pfn_shift = vmci[VMCI_NUMBER__PFN_SHIFT].val;
+	md->_PAGE_HUGE = vmci[VMCI_NUMBER__PAGE_HUGE].val; /* Zero if not set */
+	md->PAGE_OFFSET = vmci[VMCI_ADDRESS_PAGE_OFFSET].val;
+	md->is_64bit = d->is_64bit;
+	md->is_bigendian = elfc_getencoding(pelf) == ELFDATA2MSB;
 
-	d->pmd_present = vmci[VMCI_PMD_ORDER].found;
-	d->pmd_order = vmci[VMCI_PMD_ORDER].val;
+	md->pmd_present = vmci[VMCI_NUMBER_PMD_ORDER].found;
+	md->pmd_order = vmci[VMCI_NUMBER_PMD_ORDER].val;
 
-	if (d->pgd_order > MAX_ORDER) {
+	if (md->pgd_order > MAX_ORDER) {
 		fprintf(stderr, "pgd_order is %d, only 0 or 1 are supported.\n",
-			d->pgd_order);
+			md->pgd_order);
 		return -1;
 	}
 
-	if (d->pmd_present && d->pmd_order > MAX_ORDER) {
+	if (md->pmd_present && md->pmd_order > MAX_ORDER) {
 		fprintf(stderr, "pmd_order is %d, only 0 or 1 are supported.\n",
-			d->pmd_order);
+			md->pmd_order);
 		return -1;
 	}
 
-	if (d->pte_order > MAX_ORDER) {
+	if (md->pte_order > MAX_ORDER) {
 		fprintf(stderr, "pte_order is %d, only 0 or 1 are supported.\n",
-			d->pte_order);
+			md->pte_order);
 		return -1;
 	}
 
-	if ((d->page_shift > MAX_SHIFT) || (d->page_shift < MIN_SHIFT)) {
+	if ((md->page_shift > MAX_SHIFT) || (md->page_shift < MIN_SHIFT)) {
 		fprintf(stderr, "page_shift is %d, only %d-%d are supported.\n",
-			d->page_shift, MIN_SHIFT, MAX_SHIFT);
+			md->page_shift, MIN_SHIFT, MAX_SHIFT);
 		return -1;
 	}
 
-	d->page_mask = ~((uint64_t) (d->page_size - 1));
+	md->page_mask = ~((uint64_t) (md->page_size - 1));
 
-	if (d->is_bigendian) {
-		d->conv32 = convbe32toh;
-		d->conv64 = convbe64toh;
+	if (md->is_bigendian) {
+		md->conv32 = convbe32toh;
+		md->conv64 = convbe64toh;
 	} else {
-		d->conv32 = convle32toh;
-		d->conv64 = convle64toh;
+		md->conv32 = convle32toh;
+		md->conv64 = convle64toh;
 	}
 
-	if (d->is_64bit) {
-		i = vmci[VMCI__text].found + vmci[VMCI__end].found +
-			vmci[VMCI__phys_to_kernel_offset].found;
+	if (md->is_64bit) {
+		i = vmci[VMCI_ADDRESS__text].found +
+			vmci[VMCI_ADDRESS__end].found +
+			vmci[VMCI_ADDRESS__phys_to_kernel_offset].found;
 		if (i != 0) {
 			if (i != 3) {
 				fprintf(stderr, "All of _text, _end, and"
 					" phys_to_kernel_offset not present\n");
 				return -1;
 			}
-			d->_text = vmci[VMCI__text].val;
-			d->_end = vmci[VMCI__end].val;
-			d->phys_to_kernel_offset =
-				vmci[VMCI__phys_to_kernel_offset].val;
-			d->mapped_kernel = 1;
+			md->_text = vmci[VMCI_ADDRESS__text].val;
+			md->_end = vmci[VMCI_ADDRESS__end].val;
+			md->phys_to_kernel_offset =
+				vmci[VMCI_ADDRESS__phys_to_kernel_offset].val;
+			md->mapped_kernel = 1;
 		} else
-			d->mapped_kernel = 0;
+			md->mapped_kernel = 0;
 
-		if (!vmci[VMCI_CKSEG0].found) {
+		if (!vmci[VMCI_ADDRESS_CKSEG0].found) {
 			fprintf(stderr, "CKSEG0 not present in core file\n");
 			return -1;
 		}
-		d->CKSEG0 = vmci[VMCI_CKSEG0].val;
+		md->CKSEG0 = vmci[VMCI_ADDRESS_CKSEG0].val;
 
-		if (!vmci[VMCI_CKSSEG].found) {
+		if (!vmci[VMCI_ADDRESS_CKSSEG].found) {
 			fprintf(stderr, "CKSSEG not present in core file\n");
 			return -1;
 		}
-		d->CKSSEG = vmci[VMCI_CKSSEG].val;
+		md->CKSSEG = vmci[VMCI_ADDRESS_CKSSEG].val;
 
-		if (d->pmd_present) {
-			d->pmd_shift = d->page_shift + (d->pte_order ? 10 : 9);
-			d->pgd_shift = d->pmd_shift + (d->pmd_order ? 10 : 9);
+		if (md->pmd_present) {
+			md->pmd_shift = md->page_shift + 
+				(md->pte_order ? 10 : 9);
+			md->pgd_shift = md->pmd_shift +
+				(md->pmd_order ? 10 : 9);
 		} else {
-			d->pgd_shift = d->page_shift + (d->pte_order ? 10 : 9);
+			md->pgd_shift = md->page_shift +
+				(md->pte_order ? 10 : 9);
 		}
 	} else {
-		if (d->pmd_present) {
-			d->pmd_shift = d->page_shift + (d->pte_order ? 11 : 10);
-			d->pgd_shift = d->pmd_shift + (d->pmd_order ? 11 : 10);
+		if (md->pmd_present) {
+			md->pmd_shift = md->page_shift +
+				(md->pte_order ? 11 : 10);
+			md->pgd_shift = md->pmd_shift +
+				(md->pmd_order ? 11 : 10);
 		} else
-			d->pgd_shift = d->page_shift + (d->pte_order ? 11 : 10);
+			md->pgd_shift = md->page_shift +
+				(md->pte_order ? 11 : 10);
 		
-		if (!vmci[VMCI_PHYS_OFFSET].found) {
+		if (!vmci[VMCI_ADDRESS_PHYS_OFFSET].found) {
 			fprintf(stderr,
 				"PHYS_OFFSET not present in core file\n");
 			return -1;
 		}
-		d->PHYS_OFFSET = vmci[VMCI_PHYS_OFFSET].val;
+		md->PHYS_OFFSET = vmci[VMCI_ADDRESS_PHYS_OFFSET].val;
 	}
 
-	*arch_data = d;
+	*arch_data = md;
+
+
+	if (md->_PAGE_HUGE)
+		d->section_size_bits = 29;
+	else
+		d->section_size_bits = 28;
+	d->max_physmem_bits = 38;
+
 	return 0;
 }
 
@@ -679,14 +689,14 @@ mips_walk(struct elfc *pelf, GElf_Addr pgd,
 	  GElf_Addr begin_addr, GElf_Addr end_addr, void *arch_data,
 	  handle_page_f handle_page, void *userdata)
 {
-	const struct mips_walk_data *d = arch_data;
+	const struct mips_walk_data *md = arch_data;
 	int rv;
 
-	if (d->is_64bit)
-		rv = walk_mips64(pelf, d, pgd, begin_addr, end_addr,
+	if (md->is_64bit)
+		rv = walk_mips64(pelf, md, pgd, begin_addr, end_addr,
 				 handle_page, userdata);
 	else
-		rv = walk_mips32(pelf, d, pgd, begin_addr, end_addr,
+		rv = walk_mips32(pelf, md, pgd, begin_addr, end_addr,
 				 handle_page, userdata);
 
 	return rv;

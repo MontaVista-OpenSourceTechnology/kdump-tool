@@ -35,6 +35,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <endian.h>
+#include <malloc.h>
 
 #include "elfc.h"
 
@@ -293,23 +294,55 @@ handle_pae_pdp(struct elfc *pelf, GElf_Addr pgd,
 	return 0;
 }
 
-static int
-i386_walk(struct elfc *pelf, GElf_Addr pgd,
-	  GElf_Addr begin_addr, GElf_Addr end_addr, void *arch_data,
-	  handle_page_f handle_page, void *userdata)
+struct i386_data
 {
-	int pae = 0;
-	int rv;
+	bool pae;
+};
+
+static int
+i386_arch_setup(struct elfc *pelf, struct kdt_data *d, void **arch_data)
+{
+	struct i386_data *md;
 	struct vmcoreinfo_data vmci[] = {
 		{ "CONFIG_X86_PAE", VMINFO_YN_BASE },
 		{ NULL }
 	};
 
+	md = malloc(sizeof(*md));
+	if (!md) {
+		fprintf(stderr, "Out of memory allocating i386 arch data\n");
+		return -1;
+	}
+	memset(md, 0, sizeof(*md));
+
 	handle_vminfo_notes(pelf, vmci);
 	if (vmci[0].found)
-		pae = vmci[0].val;
+		md->pae = vmci[0].val;
 
-	if (pae)
+	d->section_size_bits = 26;
+	if (md->pae)
+		d->max_physmem_bits = 36;
+	else
+		d->max_physmem_bits = 32;
+
+	return 0;
+}
+
+static void
+i386_arch_cleanup(void *arch_data)
+{
+	free(arch_data);
+}
+
+static int
+i386_walk(struct elfc *pelf, GElf_Addr pgd,
+	  GElf_Addr begin_addr, GElf_Addr end_addr, void *arch_data,
+	  handle_page_f handle_page, void *userdata)
+{
+	int rv;
+	struct i386_data *md = arch_data;
+
+	if (md->pae)
 		rv = handle_pae_pdp(pelf, pgd, begin_addr, end_addr,
 				    handle_page, userdata);
 	else
@@ -323,5 +356,7 @@ struct archinfo i386_arch = {
 	.name = "i386",
 	.elfmachine = EM_386,
 	.default_elfclass = ELFCLASS32,
+	.setup_arch_pelf = i386_arch_setup,
+	.cleanup_arch_data = i386_arch_cleanup,
 	.walk_page_table = i386_walk
 };

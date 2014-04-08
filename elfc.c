@@ -981,6 +981,25 @@ elfc_pmem_file_offset(struct elfc *e, GElf_Addr addr, size_t len,
 	return 0;
 }
 
+int elfc_vmem_to_pmem(struct elfc *e, GElf_Addr vaddr, GElf_Addr *paddr)
+{
+	int i;
+	GElf_Addr s_beg;
+	GElf_Addr s_end;
+
+	for (i = 0; i < e->num_phdrs; i++) {
+		s_beg = e->phdrs[i].p.p_vaddr;
+		s_end = s_beg + e->phdrs[i].p.p_filesz;
+
+		if ((vaddr >= s_beg) && (vaddr < s_end)) {
+			*paddr = e->phdrs[i].p.p_paddr + (vaddr - s_beg);
+			return 0;
+		}
+	}
+	e->eerrno = ENOENT;
+	return -1;
+}
+
 int
 elfc_read_vmem(struct elfc *e, GElf_Addr addr, void *odata, size_t len)
 {

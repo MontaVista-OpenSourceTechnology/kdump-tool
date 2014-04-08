@@ -36,6 +36,7 @@
 
 #define _FILE_OFFSET_BITS 64
 
+#include <stdbool.h>
 #include <getopt.h>
 
 #include "elfc.h"
@@ -70,6 +71,25 @@ struct vmcoreinfo_data {
 int handle_vminfo_notes(struct elfc *elf, struct vmcoreinfo_data *vals);
 #define VMINFO_YN_BASE		-1
 
+#define VMCI_ADDRESS(lbl)						\
+	[VMCI_ADDRESS_ ## lbl] = { "ADDRESS(" #lbl ")", 16, 0, 0 }
+#define VMCI_PAGESIZE()						\
+	[VMCI_PAGESIZE] = { "PAGESIZE", 10, 0, 0 }
+#define VMCI_NUMBER(lbl)						\
+	[VMCI_NUMBER_ ## lbl] = { "NUMBER(" #lbl ")", 10, 0, 0 }
+#define VMCI_SYMBOL(lbl)						\
+	[VMCI_SYMBOL_ ## lbl] = { "SYMBOL(" #lbl ")", 16, 0, 0 }
+#define VMCI_SIZE(lbl)						\
+	[VMCI_SIZE_ ## lbl] = { "SIZE(" #lbl ")", 10, 0, 0 }
+#define VMCI_LENGTH(lbl)						\
+	[VMCI_LENGTH_ ## lbl ] = { "LENGTH(" #lbl ")", 10, 0, 0 }
+#define VMCI_SLENGTH(str, elem)						\
+	[VMCI_LENGTH_ ## str ## __ ## elem] = { "LENGTH(" #str "." #elem ")", \
+	 10, 0, 0 }
+#define VMCI_OFFSET(str, elem)						\
+	[VMCI_OFFSET_ ## str ## __ ## elem] = { "OFFSET(" #str "." #elem ")", \
+	 10, 0, 0 }
+
 /*
  * Search for, and call handler on, every instance of the given entry
  * name in the vmcoreinfo note.
@@ -79,6 +99,7 @@ int find_vmcore_entries(struct elfc *elf, const char *entry,
 				       int strlen, void *userdata),
 			void *userdata);
 
+#define divide_round_up(x, y) (((x) + ((y) - 1)) / (y))
 
 typedef int (*handle_page_f)(struct elfc *pelf,
 			     GElf_Addr paddr,
@@ -86,12 +107,15 @@ typedef int (*handle_page_f)(struct elfc *pelf,
 			     GElf_Addr pgsize,
 			     void *userdata);
 
+struct kdt_data;
+
 struct archinfo {
 	struct link link; /* For internal use */
 	char *name;
 	int  elfmachine;
 	int  default_elfclass;
-	int (*setup_arch_pelf)(struct elfc *pelf, void **arch_data);
+	int (*setup_arch_pelf)(struct elfc *pelf, struct kdt_data *data,
+			       void **arch_data);
 	void (*cleanup_arch_data)(void *arch_data);
 	int (*walk_page_table)(struct elfc *pelf, GElf_Addr pgd,
 			       GElf_Addr begin_addr, GElf_Addr end_addr,
@@ -103,6 +127,97 @@ struct archinfo *find_arch(int elfmachine);
 void add_arch(struct archinfo *arch);
 
 struct elfc *read_oldmem(char *oldmem, char *vmcore);
+
+struct page_info {
+	uint64_t flags; /* unsigned long */
+	uint32_t count; /* atomic_t */
+	uint32_t mapcount; /* atomic_t */
+	GElf_Addr mapping;
+	GElf_Addr lru[2]; /* list_head */
+	uint64_t private; /* unsigned long */
+};
+
+struct page_range {
+	struct link link;
+	uint64_t start_page;
+	uint64_t nr_pages;
+	GElf_Addr mapaddr;
+	unsigned char *bitmap;
+};
+
+struct kdt_data {
+	struct elfc *elf;
+	GElf_Addr pgd;
+	struct archinfo *arch;
+	void *arch_data;
+	bool is_64bit;
+	bool is_bigendian;
+	unsigned int ptrsize;
+
+	uint64_t (*conv64)(void *in);
+	uint32_t (*conv32)(void *in);
+
+	unsigned int list_head_size;
+	unsigned int list_head_next_offset;
+	unsigned int list_head_prev_offset;
+
+	unsigned int page_size;
+	unsigned char *pagedata; /* Temporary working data for a struct page */
+	unsigned int page_shift;
+
+	/* Offsets into struct page */
+	unsigned int size_page;
+	unsigned int page_flags_offset;
+	unsigned int page_count_offset;
+	unsigned int page_mapping_offset;
+	unsigned int page_lru_offset;
+	unsigned int page_mapcount_offset;
+	unsigned int page_private_offset;
+
+	/* page flag bits */
+	uint64_t PG_lru;
+	uint64_t PG_private;
+	uint64_t PG_swapcache;
+	uint64_t PG_slab;
+
+	/* struct pglist_data offsets */
+	unsigned int pglist_data_size;
+	unsigned int node_zones_offset;
+	unsigned int nr_zones_offset;
+
+	/* struct zones offsets */
+	unsigned int zone_size;
+	unsigned int free_area_offset;
+	unsigned int free_area_length;
+
+	/* struct free_area offsets */
+	unsigned int free_area_size;
+	unsigned int free_list_offset;
+	unsigned int free_list_length;
+
+	/* Set by arch code. */
+	unsigned int section_size_bits;
+	unsigned int max_physmem_bits;
+
+	/* Other */
+	unsigned int pages_per_section;
+
+	unsigned int buddy_mapcount;
+	uint64_t NR_FREE_PAGES; 
+
+	/* sparsemem */
+	uint64_t sections_per_root;
+	/* struct mem_section */
+	unsigned int mem_section_size;
+	unsigned int mem_section_length;
+	unsigned int section_mem_map_offset;
+#define	SECTION_MARKED_PRESENT	(1ULL<<0)
+#define SECTION_HAS_MEM_MAP	(1ULL<<1)
+#define SECTION_MAP_LAST_BIT	(1ULL<<2)
+#define SECTION_MAP_MASK	(~(SECTION_MAP_LAST_BIT-1))
+
+	struct list page_maps;
+};
 
 extern struct archinfo x86_64_arch;
 extern struct archinfo i386_arch;

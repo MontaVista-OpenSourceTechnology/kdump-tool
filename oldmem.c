@@ -338,6 +338,8 @@ read_oldmem(char *oldmem, char *vmcore)
 	struct fdio_data *fdio_data;
 	struct vmcoreinfo_data vmci[] = {
 		{ "PAGESIZE", 10 },
+		{ "SYMBOL(swapper_pg_dir)", 16 },
+		{ "ADDRESS(phys_pg_ptr)", 16 },
 		{ NULL }
 	};
 	int page_size;
@@ -407,6 +409,36 @@ read_oldmem(char *oldmem, char *vmcore)
 	elfc_setencoding(elf, elfc_getencoding(velf));
 	copy_elf_notes(elf, velf);
 
+	if (!vmci[2].found) {
+		/* Add phys_pgd_ptr to the notes if it doesn't already exist */
+		GElf_Addr virt_pgdir;
+		GElf_Addr phys_pgdir;
+		char buf[128];
+
+		if (!vmci[1].found) {
+			fprintf(stderr,
+				"Error: swapper_pg_dir not in vmcore\n");
+			goto out_err;
+		}
+		virt_pgdir = vmci[0].val;
+		rv = elfc_vmem_to_pmem(velf, virt_pgdir, &phys_pgdir);
+		if (rv) {
+			fprintf(stderr, "Error getting swapper_pg_dir phys"
+				" addr: %s\n",
+				strerror(elfc_get_errno(elf)));
+			goto out_err;
+		}
+		sprintf(buf, "ADDRESS(phys_pgd_ptr)=%llx\n",
+			(unsigned long long) phys_pgdir);
+		rv = elfc_add_note(elf, 0, "VMCOREINFO", 12,
+				   buf, strlen(buf) + 1);
+		if (rv) {
+			fprintf(stderr, "Error adding phys_pgd_ptr note: %s\n",
+				strerror(elfc_get_errno(elf)));
+			goto out_err;
+		}
+	}
+	
 	elfc_free(velf);
 	velf = NULL;
 	close(vfd);

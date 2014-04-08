@@ -35,6 +35,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <endian.h>
+#include <malloc.h>
 
 #include "elfc.h"
 
@@ -84,7 +85,7 @@ handle_pte(struct arm_walk_data *d, GElf_Addr vaddr, GElf_Addr pteaddr,
 			/* 64k page */
 			rv = handle_page(d->pelf, 
 					 lpte & ~0xffff,
-					 vaddr | i << 16,
+					 vaddr | ((GElf_Addr) i) << 16,
 					 1 << 16, userdata);
 			if (rv == -1)
 				return -1;
@@ -95,7 +96,7 @@ handle_pte(struct arm_walk_data *d, GElf_Addr vaddr, GElf_Addr pteaddr,
 			/* 4k page */
 			rv = handle_page(d->pelf, 
 					 lpte & ~0xfff,
-					 vaddr | i << 12,
+					 vaddr | ((GElf_Addr) i) << 12,
 					 1 << 12, userdata);
 			if (rv == -1)
 				return -1;
@@ -103,6 +104,35 @@ handle_pte(struct arm_walk_data *d, GElf_Addr vaddr, GElf_Addr pteaddr,
 		}
 	}
 	return 0;
+}
+
+struct arm_data
+{
+	bool dummy;
+};
+
+static int
+arm_arch_setup(struct elfc *pelf, struct kdt_data *d, void **arch_data)
+{
+	struct arm_data *md;
+
+	md = malloc(sizeof(*md));
+	if (!md) {
+		fprintf(stderr, "Out of memory allocating arm arch data\n");
+		return -1;
+	}
+	memset(md, 0, sizeof(*md));
+
+	d->section_size_bits = 28;
+	d->max_physmem_bits = 32;
+
+	return 0;
+}
+
+static void
+arm_arch_cleanup(void *arch_data)
+{
+	free(arch_data);
 }
 
 static int
@@ -114,8 +144,8 @@ arm_walk(struct elfc *pelf, GElf_Addr pgdaddr,
 	struct arm_walk_data data, *d = &data;
 	int i;
 	int rv;
-	uint32_t start = begin_addr >> 20;
-	uint32_t end = end_addr >> 20;
+	uint32_t start = (begin_addr & 0xffffffff) >> 20;
+	uint32_t end = (end_addr & 0xffffffff) >> 20;
 
 	begin_addr &= 0x000fffff;
 	end_addr &= 0x000fffff;
@@ -143,7 +173,7 @@ arm_walk(struct elfc *pelf, GElf_Addr pgdaddr,
 			/* Unused entry */
 			continue;
 		case 1:
-			rv = handle_pte(d, i << 20, lpgd & ~0xff3,
+			rv = handle_pte(d, ((GElf_Addr) i) << 20, lpgd & ~0xff3,
 					begin_addr, end_addr,
 					handle_page, userdata);
 			if (rv == -1)
@@ -157,7 +187,7 @@ arm_walk(struct elfc *pelf, GElf_Addr pgdaddr,
 			}
 			rv = handle_page(pelf, 
 					 lpgd & ~0xfffff,
-					 i << 20,
+					 ((GElf_Addr) i) << 20,
 					 1 << 20, userdata);
 			if (rv == -1)
 				return -1;
@@ -171,5 +201,7 @@ struct archinfo arm_arch = {
 	.name = "arm",
 	.elfmachine = EM_ARM,
 	.default_elfclass = ELFCLASS32,
+	.setup_arch_pelf = arm_arch_setup,
+	.cleanup_arch_data = arm_arch_cleanup,
 	.walk_page_table = arm_walk
 };
