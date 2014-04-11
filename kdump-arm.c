@@ -42,20 +42,11 @@
 struct arm_walk_data {
 	struct elfc *pelf;
 	int is_bigendian;
-	uint32_t (*conv32)(uint32_t val);
+	uint32_t (*conv32)(void *in);
 };
 
-static uint32_t convbe32toh(uint32_t val)
-{
-	return be32toh(val);
-}
-static uint32_t convle32toh(uint32_t val)
-{
-	return le32toh(val);
-}
-
 static int
-handle_pte(struct arm_walk_data *d, GElf_Addr vaddr, GElf_Addr pteaddr,
+handle_pte(struct arm_walk_data *awd, GElf_Addr vaddr, GElf_Addr pteaddr,
 	   GElf_Addr begin_addr, GElf_Addr end_addr,
 	   handle_page_f handle_page, void *userdata)
 {
@@ -67,23 +58,23 @@ handle_pte(struct arm_walk_data *d, GElf_Addr vaddr, GElf_Addr pteaddr,
 
 	begin_addr &= 0x00000fff;
 	end_addr &= 0x00000fff;
-	rv = elfc_read_pmem(d->pelf, pteaddr, pte, sizeof(pte));
+	rv = elfc_read_pmem(awd->pelf, pteaddr, pte, sizeof(pte));
 	if (rv == -1) {
 		fprintf(stderr, "Unable to read page table entry at"
 			" %llx: %s\n", (unsigned long long) pteaddr,
-			strerror(elfc_get_errno(d->pelf)));
+			strerror(elfc_get_errno(awd->pelf)));
 		return -1;
 	}
 
 	for (i = start; i <= end; i++) {
-		uint64_t lpte = d->conv32(pte[i]);
+		uint64_t lpte = awd->conv32(&pte[i]);
 
 		switch (lpte & 0x3) {
 		case 0:
 			continue;
 		case 1:
 			/* 64k page */
-			rv = handle_page(d->pelf, 
+			rv = handle_page(awd->pelf, 
 					 lpte & ~0xffff,
 					 vaddr | ((GElf_Addr) i) << 16,
 					 1 << 16, userdata);
@@ -94,7 +85,7 @@ handle_pte(struct arm_walk_data *d, GElf_Addr vaddr, GElf_Addr pteaddr,
 		case 2:
 		case 3:
 			/* 4k page */
-			rv = handle_page(d->pelf, 
+			rv = handle_page(awd->pelf, 
 					 lpte & ~0xfff,
 					 vaddr | ((GElf_Addr) i) << 12,
 					 1 << 12, userdata);
@@ -106,25 +97,25 @@ handle_pte(struct arm_walk_data *d, GElf_Addr vaddr, GElf_Addr pteaddr,
 	return 0;
 }
 
-struct arm_data
-{
-	bool dummy;
-};
-
 static int
 arm_arch_setup(struct elfc *pelf, struct kdt_data *d, void **arch_data)
 {
-	struct arm_data *md;
+	struct arm_walk_data *awd;
 
-	md = malloc(sizeof(*md));
-	if (!md) {
+	awd = malloc(sizeof(*awd));
+	if (!awd) {
 		fprintf(stderr, "Out of memory allocating arm arch data\n");
 		return -1;
 	}
-	memset(md, 0, sizeof(*md));
+	memset(awd, 0, sizeof(*awd));
+
+	awd->pelf = pelf;
+	awd->conv32 = d->conv32;
 
 	d->section_size_bits = 28;
 	d->max_physmem_bits = 32;
+
+	*arch_data = awd;
 
 	return 0;
 }
@@ -141,7 +132,7 @@ arm_walk(struct elfc *pelf, GElf_Addr pgdaddr,
 	 handle_page_f handle_page, void *userdata)
 {
 	uint32_t pgd[4096];
-	struct arm_walk_data data, *d = &data;
+	struct arm_walk_data *awd = arch_data;
 	int i;
 	int rv;
 	uint32_t start = (begin_addr & 0xffffffff) >> 20;
@@ -157,15 +148,8 @@ arm_walk(struct elfc *pelf, GElf_Addr pgdaddr,
 		return -1;
 	}
 
-	d->pelf = pelf;
-	d->is_bigendian = elfc_getencoding(pelf) == ELFDATA2MSB;
-	if (d->is_bigendian)
-		d->conv32 = convbe32toh;
-	else
-		d->conv32 = convle32toh;
-
 	for (i = start; i <= end; i++) {
-		uint32_t lpgd = d->conv32(pgd[i]);
+		uint32_t lpgd = awd->conv32(&pgd[i]);
 
 		switch (lpgd & 0x3) {
 		case 0:
@@ -173,7 +157,8 @@ arm_walk(struct elfc *pelf, GElf_Addr pgdaddr,
 			/* Unused entry */
 			continue;
 		case 1:
-			rv = handle_pte(d, ((GElf_Addr) i) << 20, lpgd & ~0xff3,
+			rv = handle_pte(awd, ((GElf_Addr) i) << 20,
+					lpgd & ~0xff3,
 					begin_addr, end_addr,
 					handle_page, userdata);
 			if (rv == -1)

@@ -197,8 +197,6 @@ static int memrange_handler(const char *name, const char *str,
 			    int strlen, void *userdata)
 {
 	uint64_t start, size;
-	const char *c;
-	char *end;
 	static struct memrange *new_memrange;
 
 	if (memrange == &init_memrange) {
@@ -206,17 +204,7 @@ static int memrange_handler(const char *name, const char *str,
 		memrange = NULL;
 	}
 
-	for (c = str; *c && (*c != '@') && (*c != '\n'); c++)
-		;
-	if (*c != '@')
-		goto out_err;
-
-	size = strtoull(str, &end, 16);
-	if (*end != '@')
-		goto out_err;
-
-	start = strtoull(c + 1, &end, 16);
-	if ((*end != '\n') && (*end != '\0'))
+	if (parse_memrange(str, &start, &size) == -1)
 		goto out_err;
 
 	new_memrange = malloc(sizeof(*new_memrange) * (num_memrange + 1));
@@ -420,9 +408,9 @@ read_oldmem(char *oldmem, char *vmcore)
 				"Error: swapper_pg_dir not in vmcore\n");
 			goto out_err;
 		}
-		virt_pgdir = vmci[0].val;
+		virt_pgdir = vmci[1].val;
 		rv = elfc_vmem_to_pmem(velf, virt_pgdir, &phys_pgdir);
-		if (rv) {
+		if (rv == -1) {
 			fprintf(stderr, "Error getting swapper_pg_dir phys"
 				" addr: %s\n",
 				strerror(elfc_get_errno(elf)));
@@ -432,7 +420,7 @@ read_oldmem(char *oldmem, char *vmcore)
 			(unsigned long long) phys_pgdir);
 		rv = elfc_add_note(elf, 0, "VMCOREINFO", 12,
 				   buf, strlen(buf) + 1);
-		if (rv) {
+		if (rv == -1) {
 			fprintf(stderr, "Error adding phys_pgd_ptr note: %s\n",
 				strerror(elfc_get_errno(elf)));
 			goto out_err;

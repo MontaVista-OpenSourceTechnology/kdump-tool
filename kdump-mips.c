@@ -40,7 +40,7 @@
 #include "elfc.h"
 
 #define ENTRIES_PER_PGTAB(d, type, pgtab_size)				\
-	((1 << d->type ##_order) * (1 << d->page_shift) / (pgtab_size))
+	((1 << mwd->type ##_order) * (1 << mwd->page_shift) / (pgtab_size))
 
 #define MAX_SHIFT 16
 #define MIN_SHIFT 12
@@ -64,6 +64,7 @@ enum vmcoreinfo_labels {
 	VMCI_ADDRESS_PHYS_OFFSET,
 	VMCI_NUMBER_PMD_ORDER,
 	VMCI_NUMBER__PAGE_HUGE,
+	VMCI_ADDRESS_IO_BASE,
 	/* Begin required elements. */
 #define VREQ	VMCI_NUMBER_PAGE_SHIFT
 	VMCI_NUMBER_PAGE_SHIFT,
@@ -75,23 +76,6 @@ enum vmcoreinfo_labels {
 	/* End actual elements. */
 	VMCI_NUM_ELEMENTS
 };
-
-static uint64_t convbe64toh(uint64_t val)
-{
-	return be64toh(val);
-}
-static uint64_t convle64toh(uint64_t val)
-{
-	return le64toh(val);
-}
-static uint32_t convbe32toh(uint32_t val)
-{
-	return be32toh(val);
-}
-static uint32_t convle32toh(uint32_t val)
-{
-	return le32toh(val);
-}
 
 struct mips_walk_data {
 	unsigned int page_shift;
@@ -105,10 +89,9 @@ struct mips_walk_data {
 	unsigned int pfn_shift;
 	/* pte_shift is page_shift */
 	uint64_t page_present_mask;
-	int is_64bit;
-	int is_bigendian;
-	uint64_t (*conv64)(uint64_t val);
-	uint32_t (*conv32)(uint32_t val);
+	bool is_64bit;
+	uint64_t (*conv64)(void *in);
+	uint32_t (*conv32)(void *in);
 	uint64_t page_mask;
 
 	uint64_t _text;
@@ -123,19 +106,97 @@ struct mips_walk_data {
 
 	uint64_t PAGE_OFFSET;
 	uint64_t PHYS_OFFSET;
+	uint64_t IO_BASE;
 };
 
 static int
-mips_virt_to_phys32(const struct mips_walk_data *d, GElf_Addr addr, int offset,
+mips_virt_to_phys32(const struct mips_walk_data *mwd,
+		    GElf_Addr addr, int offset,
 		    uint32_t vaddr, uint32_t *paddr)
 {
 	/* Convert to a physical address. */
-	*paddr = vaddr - d->PAGE_OFFSET + d->PHYS_OFFSET;
+	*paddr = vaddr - mwd->PAGE_OFFSET + mwd->PHYS_OFFSET;
+	return 0;
+}
+
+typedef int (*walk_mips)(struct elfc *pelf, const struct mips_walk_data *mwd,
+			 GElf_Addr pgdaddr,
+			 GElf_Addr begin_addr, GElf_Addr end_addr,
+			 handle_page_f handle_page, void *userdata);
+
+/*
+ * Scan a defined range of memory from r_start to r_end.  If some or all of
+ * the range from begin_addr to end_addr is in the defined range, call page
+ * table handlers on it.  After done, adjust begin_addr and end_addr to
+ * remove the range we just scanned, if necessary.
+ *
+ * Returns -1 on error, 0 if the caller shouldkeep going, 1 if the caller
+ * should return success immediately.
+ */
+static int
+scan_range(struct elfc *pelf, const struct mips_walk_data *mwd,
+	   GElf_Addr pgdaddr, uint64_t phys_offset,
+	   GElf_Addr *begin_addr, GElf_Addr *end_addr,
+	   GElf_Addr r_start, GElf_Addr r_end,
+	   handle_page_f handle_page, void *userdata,
+	   walk_mips walk)
+{
+	int rv;
+	uint64_t start, end, addr;
+
+	if (((*begin_addr <= r_start) && (*end_addr >= r_start)) ||
+	    ((*begin_addr <= r_end) && (*end_addr >= r_end)) ||
+	    ((*begin_addr > r_start) && (*end_addr < r_end)))
+	{
+		start = *begin_addr;
+		if (start < r_start)
+			start = r_start;
+		end = *end_addr;
+		if (end > r_end)
+			end = r_end;
+
+		start &= mwd->page_mask;
+		/*
+		 * The +1 converts it to one past the end, better for
+		 * scanning the range.
+		 */
+		end = (end + 1 + mwd->page_size - 1) & mwd->page_mask;
+
+		for (addr = start; addr < end; addr += mwd->page_size) {
+			rv = handle_page(pelf,
+					 addr - phys_offset,
+					 addr,
+					 1 << mwd->page_shift, userdata);
+			if (rv == -1)
+				return -1;
+		}
+
+		if ((*begin_addr >= r_start) && (*end_addr <= r_end))
+			/* Region was completely inside text */
+			return 1;
+		else if ((*begin_addr < r_start) && (*end_addr > r_end)) {
+			/* Region overlaps, have to do two ranges. */
+			rv = walk(pelf, mwd, pgdaddr,
+				  *begin_addr, r_start - 1,
+				  handle_page, userdata);
+			if (rv != -1)
+				rv = walk(pelf, mwd, pgdaddr,
+					  r_end, *end_addr,
+					  handle_page, userdata);
+			if (rv == -1)
+				return -1;
+			return 1;
+		} else if (*begin_addr < r_start)
+			*end_addr = r_start - 1;
+		else if (*end_addr > r_end)
+			*begin_addr = r_end + 1;
+	}
+
 	return 0;
 }
 
 static int
-handle_32pte(struct elfc *pelf, const struct mips_walk_data *d,
+handle_32pte(struct elfc *pelf, const struct mips_walk_data *mwd,
 	     GElf_Addr vaddr, GElf_Addr pteaddr,
 	     GElf_Addr begin_addr, GElf_Addr end_addr,
 	     handle_page_f handle_page, void *userdata)
@@ -144,15 +205,15 @@ handle_32pte(struct elfc *pelf, const struct mips_walk_data *d,
 	int pte_count = ENTRIES_PER_PGTAB(d, pte, sizeof(uint32_t));
 	int i;
 	int rv;
-	uint32_t start = begin_addr >> d->page_shift;
-	uint32_t end = end_addr >> d->page_shift;
+	uint32_t start = begin_addr >> mwd->page_shift;
+	uint32_t end = end_addr >> mwd->page_shift;
 
-	begin_addr &= ADDR32_MASK(d->page_shift);
-	end_addr &= ADDR32_MASK(d->page_shift);
+	begin_addr &= ADDR32_MASK(mwd->page_shift);
+	end_addr &= ADDR32_MASK(mwd->page_shift);
 	rv = elfc_read_pmem(pelf, pteaddr, pte,
 			    pte_count * sizeof(uint32_t));
 	if (rv == -1) {
-		fprintf(stderr, "Unable to read page middle directory at"
+		fprintf(stderr, "Unable to read page table entry at"
 			" %llx: %s\n", (unsigned long long) pteaddr,
 			strerror(elfc_get_errno(pelf)));
 		return -1;
@@ -162,15 +223,15 @@ handle_32pte(struct elfc *pelf, const struct mips_walk_data *d,
 		pte_count = end + 1;
 
 	for (i = start; i < pte_count; i++) {
-		uint32_t lpte = d->conv32(pte[i]);
+		uint32_t lpte = mwd->conv32(&pte[i]);
 
-		if (!(lpte & d->page_present_mask))
+		if (!(lpte & mwd->page_present_mask))
 			continue;
 
 		rv = handle_page(pelf,
-				 lpte >> d->pfn_shift << d->page_shift,
-				 vaddr | i << d->page_shift,
-				 1 << d->page_shift, userdata);
+				 lpte >> mwd->pfn_shift << mwd->page_shift,
+				 vaddr | i << mwd->page_shift,
+				 1 << mwd->page_shift, userdata);
 		if (rv == -1)
 			return -1;
 	}
@@ -178,7 +239,7 @@ handle_32pte(struct elfc *pelf, const struct mips_walk_data *d,
 }
 
 static int
-handle_32pmd(struct elfc *pelf, const struct mips_walk_data *d,
+handle_32pmd(struct elfc *pelf, const struct mips_walk_data *mwd,
 	     GElf_Addr vaddr, GElf_Addr pmdaddr,
 	     GElf_Addr begin_addr, GElf_Addr end_addr,
 	     handle_page_f handle_page, void *userdata)
@@ -187,11 +248,11 @@ handle_32pmd(struct elfc *pelf, const struct mips_walk_data *d,
 	int pmd_count = ENTRIES_PER_PGTAB(d, pmd, sizeof(uint32_t));
 	int i;
 	int rv;
-	uint32_t start = begin_addr >> d->pmd_shift;
-	uint32_t end = end_addr >> d->pmd_shift;
+	uint32_t start = begin_addr >> mwd->pmd_shift;
+	uint32_t end = end_addr >> mwd->pmd_shift;
 
-	begin_addr &= ADDR32_MASK(d->pmd_shift);
-	end_addr &= ADDR32_MASK(d->pmd_shift);
+	begin_addr &= ADDR32_MASK(mwd->pmd_shift);
+	end_addr &= ADDR32_MASK(mwd->pmd_shift);
 	rv = elfc_read_pmem(pelf, pmdaddr, pmd,
 			    pmd_count * sizeof(uint32_t));
 	if (rv == -1) {
@@ -205,12 +266,12 @@ handle_32pmd(struct elfc *pelf, const struct mips_walk_data *d,
 		pmd_count = end + 1;
 
 	for (i = start; i < pmd_count; i++) {
-		uint32_t lpmd = d->conv32(pmd[i]);
+		uint32_t lpmd = mwd->conv32(&pmd[i]);
 
-		if (mips_virt_to_phys32(d, pmdaddr, i, lpmd, &lpmd) == -1)
+		if (mips_virt_to_phys32(mwd, pmdaddr, i, lpmd, &lpmd) == -1)
 			continue;
 
-		rv = handle_32pte(pelf, d, vaddr | i << d->pmd_shift,
+		rv = handle_32pte(pelf, mwd, vaddr | i << mwd->pmd_shift,
 				  lpmd, begin_addr, end_addr,
 				  handle_page, userdata);
 		if (rv == -1)
@@ -220,7 +281,7 @@ handle_32pmd(struct elfc *pelf, const struct mips_walk_data *d,
 }
 
 static int
-walk_mips32(struct elfc *pelf, const struct mips_walk_data *d,
+walk_mips32(struct elfc *pelf, const struct mips_walk_data *mwd,
 	    GElf_Addr pgdaddr,
 	    GElf_Addr begin_addr, GElf_Addr end_addr,
 	    handle_page_f handle_page, void *userdata)
@@ -229,31 +290,21 @@ walk_mips32(struct elfc *pelf, const struct mips_walk_data *d,
 	int pgd_count = ENTRIES_PER_PGTAB(d, pgd, sizeof(uint32_t));
 	int i;
 	int rv;
-	GElf_Addr addr, maxaddr;
-	uint32_t dir_offset = d->PAGE_OFFSET - d->PHYS_OFFSET;
+	GElf_Addr maxaddr;
+	uint32_t dir_offset = mwd->PAGE_OFFSET - mwd->PHYS_OFFSET;
 	uint32_t start, end;
 
 	/*
 	 * Add the direct mapping first.
 	 */
 	maxaddr = elfc_max_paddr(pelf);
-	if ((begin_addr < maxaddr + dir_offset) && (end_addr >= dir_offset)) {
-		if (begin_addr > dir_offset)
-			start = (begin_addr - dir_offset) & d->page_mask;
-		else
-			start = 0;
-		if (end_addr < maxaddr + dir_offset)
-			end = end_addr - dir_offset + 1;
-		else
-			end = maxaddr;
-		for (addr = start; addr < end; addr += d->page_size) {
-			rv = handle_page(pelf,
-					 addr, addr + dir_offset,
-					 1 << d->page_shift, userdata);
-			if (rv == -1)
-				return -1;
-		}
-	}
+	rv = scan_range(pelf, mwd, pgdaddr, dir_offset, &begin_addr, &end_addr,
+			dir_offset, dir_offset + maxaddr - 1,
+			handle_page, userdata, walk_mips32);
+	if (rv == -1)
+		return rv;
+	if (rv == 1)
+		return 0;
 
 	rv = elfc_read_pmem(pelf, pgdaddr, pgd,
 			    pgd_count * sizeof(uint32_t));
@@ -264,23 +315,23 @@ walk_mips32(struct elfc *pelf, const struct mips_walk_data *d,
 		return -1;
 	}
 
-	start = begin_addr >> d->pgd_shift;
-	end = end_addr >> d->pgd_shift;
-	begin_addr &= ADDR32_MASK(d->pgd_shift);
-	end_addr &= ADDR32_MASK(d->pgd_shift);
+	start = begin_addr >> mwd->pgd_shift;
+	end = end_addr >> mwd->pgd_shift;
+	begin_addr &= ADDR32_MASK(mwd->pgd_shift);
+	end_addr &= ADDR32_MASK(mwd->pgd_shift);
 
 	for (i = start; i <= end; i++) {
-		uint32_t lpgd = d->conv32(pgd[i]);
+		uint32_t lpgd = mwd->conv32(&pgd[i]);
 
-		if (mips_virt_to_phys32(d, pgdaddr, i, lpgd, &lpgd) == -1)
+		if (mips_virt_to_phys32(mwd, pgdaddr, i, lpgd, &lpgd) == -1)
 			continue;
 
-		if (d->pmd_present)
-			rv = handle_32pmd(pelf, d, i << d->pgd_shift,
+		if (mwd->pmd_present)
+			rv = handle_32pmd(pelf, mwd, i << mwd->pgd_shift,
 					  lpgd, begin_addr, end_addr,
 					  handle_page, userdata);
 		else
-			rv = handle_32pte(pelf, d, i << d->pgd_shift,
+			rv = handle_32pte(pelf, mwd, i << mwd->pgd_shift,
 					  lpgd, begin_addr, end_addr,
 					  handle_page, userdata);
 		if (rv == -1)
@@ -290,22 +341,23 @@ walk_mips32(struct elfc *pelf, const struct mips_walk_data *d,
 }
 
 static int
-mips_virt_to_phys64(const struct mips_walk_data *d, GElf_Addr addr, int offset,
+mips_virt_to_phys64(const struct mips_walk_data *mwd,
+		    GElf_Addr addr, int offset,
 		    GElf_Addr vaddr, GElf_Addr *paddr)
 {
 	/* Convert to a physical address. */
-	if (d->is_64bit) {
-		if (d->mapped_kernel) {
-			if ((vaddr >= d->_text) && (vaddr < d->_end)) {
-				*paddr = vaddr - d->phys_to_kernel_offset;
+	if (mwd->is_64bit) {
+		if (mwd->mapped_kernel) {
+			if ((vaddr >= mwd->_text) && (vaddr < mwd->_end)) {
+				*paddr = vaddr - mwd->phys_to_kernel_offset;
 				return 0;
 			}
 		}
-		if (vaddr < d->CKSEG0) {
+		if (vaddr < mwd->CKSEG0) {
 			*paddr = vaddr & 0x000000ffffffffffULL;
 			return 0;
 		}
-		if (vaddr < d->CKSSEG) {
+		if (vaddr < mwd->CKSSEG) {
 			*paddr = vaddr & 0x1fffffffULL;
 			return 0;
 		}
@@ -316,13 +368,13 @@ mips_virt_to_phys64(const struct mips_walk_data *d, GElf_Addr addr, int offset,
 			(unsigned long long) vaddr);
 		return -1;
 	} else {
-		*paddr = vaddr - d->PAGE_OFFSET + d->PHYS_OFFSET;
+		*paddr = vaddr - mwd->PAGE_OFFSET + mwd->PHYS_OFFSET;
 	}
 	return 0;
 }
 
 static int
-handle_64pte(struct elfc *pelf, const struct mips_walk_data *d,
+handle_64pte(struct elfc *pelf, const struct mips_walk_data *mwd,
 	     GElf_Addr vaddr, GElf_Addr pteaddr,
 	     GElf_Addr begin_addr, GElf_Addr end_addr,
 	     handle_page_f handle_page, void *userdata)
@@ -331,15 +383,15 @@ handle_64pte(struct elfc *pelf, const struct mips_walk_data *d,
 	int pte_count = ENTRIES_PER_PGTAB(d, pte, sizeof(uint64_t));
 	int i;
 	int rv;
-	uint64_t start = begin_addr >> d->page_shift;
-	uint64_t end = end_addr >> d->page_shift;
+	uint64_t start = begin_addr >> mwd->page_shift;
+	uint64_t end = end_addr >> mwd->page_shift;
 
-	begin_addr &= ADDR64_MASK(d->page_shift);
-	end_addr &= ADDR64_MASK(d->page_shift);
+	begin_addr &= ADDR64_MASK(mwd->page_shift);
+	end_addr &= ADDR64_MASK(mwd->page_shift);
 	rv = elfc_read_pmem(pelf, pteaddr, pte,
 			    pte_count * sizeof(uint64_t));
 	if (rv == -1) {
-		fprintf(stderr, "Unable to read page middle directory at"
+		fprintf(stderr, "Unable to read page table entry at"
 			" %llx: %s\n", (unsigned long long) pteaddr,
 			strerror(elfc_get_errno(pelf)));
 		return -1;
@@ -349,15 +401,15 @@ handle_64pte(struct elfc *pelf, const struct mips_walk_data *d,
 		pte_count = end + 1;
 
 	for (i = start; i < pte_count; i++) {
-		uint64_t lpte = d->conv64(pte[i]);
+		uint64_t lpte = mwd->conv64(&pte[i]);
 
-		if (!(lpte & d->page_present_mask))
+		if (!(lpte & mwd->page_present_mask))
 			continue;
 
 		rv = handle_page(pelf,
-				 lpte >> d->pfn_shift << d->page_shift,
-				 vaddr | i << d->page_shift,
-				 1 << d->page_shift, userdata);
+				 lpte >> mwd->pfn_shift << mwd->page_shift,
+				 vaddr | i << mwd->page_shift,
+				 1 << mwd->page_shift, userdata);
 		if (rv == -1)
 			return -1;
 	}
@@ -365,20 +417,20 @@ handle_64pte(struct elfc *pelf, const struct mips_walk_data *d,
 }
 
 static int
-handle_64pmd(struct elfc *pelf, const struct mips_walk_data *d,
+handle_64pmd(struct elfc *pelf, const struct mips_walk_data *mwd,
 	     GElf_Addr vaddr, GElf_Addr pmdaddr,
 	     GElf_Addr begin_addr, GElf_Addr end_addr,
 	     handle_page_f handle_page, void *userdata)
 {
 	uint64_t pmd[MAX_PGTAB_ENTRIES(sizeof(uint64_t))];
 	int pmd_count = ENTRIES_PER_PGTAB(d, pmd, sizeof(uint64_t));
-	int i;
+	unsigned int i;
 	int rv;
-	uint64_t start = begin_addr >> d->pmd_shift;
-	uint64_t end = end_addr >> d->pmd_shift;
+	uint64_t start = begin_addr >> mwd->pmd_shift;
+	uint64_t end = end_addr >> mwd->pmd_shift;
 
-	begin_addr &= ADDR64_MASK(d->pmd_shift);
-	end_addr &= ADDR64_MASK(d->pmd_shift);
+	begin_addr &= ADDR64_MASK(mwd->pmd_shift);
+	end_addr &= ADDR64_MASK(mwd->pmd_shift);
 
 	rv = elfc_read_pmem(pelf, pmdaddr, pmd,
 			    pmd_count * sizeof(uint64_t));
@@ -393,20 +445,21 @@ handle_64pmd(struct elfc *pelf, const struct mips_walk_data *d,
 		pmd_count = end + 1;
 
 	for (i = start; i < pmd_count; i++) {
-		GElf_Addr lpmd = d->conv64(pmd[i]);
+		GElf_Addr lpmd = mwd->conv64(&pmd[i]);
 
-		if ((lpmd & d->_PAGE_HUGE) && (lpmd & d->page_present_mask)) {
+		if ((lpmd & mwd->_PAGE_HUGE) &&
+		    (lpmd & mwd->page_present_mask)) {
 			rv = handle_page(pelf,
-					 lpmd >> d->pfn_shift << d->page_shift,
-					 vaddr | i << d->pmd_shift,
-					 1 << d->pmd_shift, userdata);
+				 lpmd >> mwd->pfn_shift << mwd->page_shift,
+				 vaddr | i << mwd->pmd_shift,
+				 1 << mwd->pmd_shift, userdata);
 			if (rv == -1)
 				return -1;
 		}
-		if (mips_virt_to_phys64(d, pmdaddr, i, lpmd, &lpmd) == -1)
+		if (mips_virt_to_phys64(mwd, pmdaddr, i, lpmd, &lpmd) == -1)
 			continue;
 
-		rv = handle_64pte(pelf, d, vaddr | i << d->pmd_shift,
+		rv = handle_64pte(pelf, mwd, vaddr | i << mwd->pmd_shift,
 				  lpmd, begin_addr, end_addr,
 				  handle_page, userdata);
 		if (rv == -1)
@@ -416,17 +469,19 @@ handle_64pmd(struct elfc *pelf, const struct mips_walk_data *d,
 }
 
 static int
-walk_mips64(struct elfc *pelf, const struct mips_walk_data *d,
+walk_mips64(struct elfc *pelf, const struct mips_walk_data *mwd,
 	    GElf_Addr pgdaddr,
 	    GElf_Addr begin_addr, GElf_Addr end_addr,
 	    handle_page_f handle_page, void *userdata)
 {
 	uint64_t pgd[MAX_PGTAB_ENTRIES(sizeof(uint64_t))];
 	int pgd_count = ENTRIES_PER_PGTAB(d, pgd, sizeof(uint64_t));
-	int i;
+	unsigned int i;
 	int rv;
-	GElf_Addr addr, maxaddr;
+	GElf_Addr maxaddr;
 	uint64_t start, end;
+
+	printf("PGD = %llx\n", (unsigned long long) pgdaddr);
 
 	/*
 	 * Add the default page tables for iomem and kernel.
@@ -434,66 +489,39 @@ walk_mips64(struct elfc *pelf, const struct mips_walk_data *d,
 	 * MIPS uses hardwired TLBs for some of these, and some are
 	 * intrinsic to processors.
 	 */
-	if (d->mapped_kernel &&
-	    (begin_addr < d->_end) && (end_addr >= d->_text)) {
-		if (begin_addr > d->_text)
-			start = begin_addr & d->page_mask;
-		else
-			start = d->_text;
-		if (end_addr < d->_text)
-			end = end_addr + 1;
-		else
-			end = d->_end;
-			
-		for (addr = d->_text; addr < d->_end; addr += d->page_size) {
-			rv = handle_page(pelf,
-					 addr - d->phys_to_kernel_offset,
-					 addr,
-					 1 << d->page_shift, userdata);
-			if (rv == -1)
-				return -1;
-		}
-	}
-	maxaddr = elfc_max_paddr(pelf);
-	if ((begin_addr < maxaddr + d->PAGE_OFFSET) &&
-	    (end_addr >= d->PAGE_OFFSET)) {
-		if (begin_addr > d->PAGE_OFFSET)
-			start = (begin_addr - d->PAGE_OFFSET) & d->page_mask;
-		else
-			start = 0;
-		if (end_addr < maxaddr + d->PAGE_OFFSET)
-			end = end_addr - d->PAGE_OFFSET + 1;
-		else
-			end = maxaddr;
-		for (addr = start; addr < end; addr += d->page_size) {
-			rv = handle_page(pelf,
-					 addr, addr + d->PAGE_OFFSET,
-					 1 << d->page_shift, userdata);
-			if (rv == -1)
-				return -1;
-		}
-	}
-	if (maxaddr > 0x20000000)
-		maxaddr = 0x20000000;
-	if ((begin_addr < maxaddr + d->CKSEG0) &&
-	    (end_addr >= d->CKSEG0)) {
-		if (begin_addr > d->CKSEG0)
-			start = (begin_addr - d->CKSEG0) & d->page_mask;
-		else
-			start = 0;
-		if (end_addr < maxaddr + d->CKSEG0)
-			end = end_addr - d->CKSEG0 + 1;
-		else
-			end = maxaddr;
-		for (addr = start; addr < end; addr += d->page_size) {
-			rv = handle_page(pelf,
-					 addr, addr + d->CKSEG0,
-					 1 << d->page_shift, userdata);
-			if (rv == -1)
-				return -1;
-		}
+	if (mwd->mapped_kernel) {
+		rv = scan_range(pelf, mwd, pgdaddr, mwd->phys_to_kernel_offset,
+				&begin_addr, &end_addr,
+				mwd->_text, mwd->_end - 1,
+				handle_page, userdata, walk_mips64);
+		if (rv == -1)
+			return rv;
+		if (rv == 1)
+			return 0;
 	}
 
+	maxaddr = elfc_max_paddr(pelf);
+	rv = scan_range(pelf, mwd, pgdaddr, mwd->PAGE_OFFSET,
+			&begin_addr, &end_addr,
+			mwd->PAGE_OFFSET, mwd->PAGE_OFFSET + maxaddr - 1,
+			handle_page, userdata, walk_mips64);
+	if (rv == -1)
+		return rv;
+	if (rv == 1)
+		return 0;
+
+	if (maxaddr > 0x20000000)
+		maxaddr = 0x20000000;
+	rv = scan_range(pelf, mwd, pgdaddr,  mwd->CKSEG0,
+			&begin_addr, &end_addr,
+			mwd->CKSEG0, mwd->CKSEG0 + maxaddr - 1,
+			handle_page, userdata, walk_mips64);
+	if (rv == -1)
+		return rv;
+	if (rv == 1)
+		return 0;
+
+	/* Now do the page tables. */
 	rv = elfc_read_pmem(pelf, pgdaddr, pgd,
 			    pgd_count * sizeof(uint64_t));
 	if (rv == -1) {
@@ -503,18 +531,24 @@ walk_mips64(struct elfc *pelf, const struct mips_walk_data *d,
 		return -1;
 	}
 
-	for (i = 0; i < pgd_count; i++) {
-		GElf_Addr lpgd = d->conv64(pgd[i]);
+	start = begin_addr >> mwd->pgd_shift;
+	end = end_addr >> mwd->pgd_shift;
+	if (end < (pgd_count - 1))
+		pgd_count = end + 1;
 
-		if (mips_virt_to_phys64(d, pgdaddr, i, lpgd, &lpgd) == -1)
+	for (i = start; i < pgd_count; i++) {
+		GElf_Addr lpgd = mwd->conv64(&pgd[i]);
+
+		printf("PGD[%d] = %llx\n", i, (unsigned long long) lpgd);
+		if (mips_virt_to_phys64(mwd, pgdaddr, i, lpgd, &lpgd) == -1)
 			continue;
 
-		if (d->pmd_present)
-			rv = handle_64pmd(pelf, d, i << d->pgd_shift,
+		if (mwd->pmd_present)
+			rv = handle_64pmd(pelf, mwd, i << mwd->pgd_shift,
 					  lpgd, begin_addr, end_addr,
 					  handle_page, userdata);
 		else
-			rv = handle_64pte(pelf, d, i << d->pgd_shift,
+			rv = handle_64pte(pelf, mwd, i << mwd->pgd_shift,
 					  lpgd, begin_addr, end_addr,
 					  handle_page, userdata);
 		if (rv == -1)
@@ -526,7 +560,7 @@ walk_mips64(struct elfc *pelf, const struct mips_walk_data *d,
 static int
 mips_arch_setup(struct elfc *pelf, struct kdt_data *d, void **arch_data)
 {
-	struct mips_walk_data *md;
+	struct mips_walk_data *mwd;
 	struct vmcoreinfo_data vmci[VMCI_NUM_ELEMENTS + 1] = {
 		VMCI_ADDRESS(_text),
 		VMCI_ADDRESS(_end),
@@ -535,6 +569,7 @@ mips_arch_setup(struct elfc *pelf, struct kdt_data *d, void **arch_data)
 		VMCI_ADDRESS(CKSSEG),
 		VMCI_ADDRESS(PAGE_OFFSET),
 		VMCI_ADDRESS(PHYS_OFFSET),
+		VMCI_ADDRESS(IO_BASE),
 		VMCI_NUMBER(PMD_ORDER),
 		VMCI_NUMBER(_PAGE_HUGE),
 		VMCI_NUMBER(PAGE_SHIFT),
@@ -545,12 +580,12 @@ mips_arch_setup(struct elfc *pelf, struct kdt_data *d, void **arch_data)
 	};
 	int i;
 
-	md = malloc(sizeof(*md));
-	if (!md) {
+	mwd = malloc(sizeof(*mwd));
+	if (!mwd) {
 		fprintf(stderr, "Out of memory allocating mips arch data\n");
 		return -1;
 	}
-	memset(md, 0, sizeof(*md));
+	memset(mwd, 0, sizeof(*mwd));
 
 	handle_vminfo_notes(pelf, vmci);
 	for (i = VREQ; vmci[i].name; i++) { 
@@ -561,55 +596,49 @@ mips_arch_setup(struct elfc *pelf, struct kdt_data *d, void **arch_data)
 		}
 	}
 
-	md->page_shift = vmci[VMCI_NUMBER_PAGE_SHIFT].val;
-	md->page_size = (1 << md->page_shift);
-	md->pgd_order = vmci[VMCI_NUMBER_PGD_ORDER].val;
-	md->pte_order = vmci[VMCI_NUMBER_PTE_ORDER].val;
-	md->page_present_mask = vmci[VMCI_NUMBER__PAGE_PRESENT].val;
-	md->pfn_shift = vmci[VMCI_NUMBER__PFN_SHIFT].val;
-	md->_PAGE_HUGE = vmci[VMCI_NUMBER__PAGE_HUGE].val; /* Zero if not set */
-	md->PAGE_OFFSET = vmci[VMCI_ADDRESS_PAGE_OFFSET].val;
-	md->is_64bit = d->is_64bit;
-	md->is_bigendian = elfc_getencoding(pelf) == ELFDATA2MSB;
+	mwd->page_shift = vmci[VMCI_NUMBER_PAGE_SHIFT].val;
+	mwd->page_size = (1 << mwd->page_shift);
+	mwd->pgd_order = vmci[VMCI_NUMBER_PGD_ORDER].val;
+	mwd->pte_order = vmci[VMCI_NUMBER_PTE_ORDER].val;
+	mwd->page_present_mask = vmci[VMCI_NUMBER__PAGE_PRESENT].val;
+	mwd->pfn_shift = vmci[VMCI_NUMBER__PFN_SHIFT].val;
+	mwd->_PAGE_HUGE = vmci[VMCI_NUMBER__PAGE_HUGE].val;/* Zero if not set */
+	mwd->PAGE_OFFSET = vmci[VMCI_ADDRESS_PAGE_OFFSET].val;
+	mwd->is_64bit = d->is_64bit;
 
-	md->pmd_present = vmci[VMCI_NUMBER_PMD_ORDER].found;
-	md->pmd_order = vmci[VMCI_NUMBER_PMD_ORDER].val;
+	mwd->pmd_present = vmci[VMCI_NUMBER_PMD_ORDER].found;
+	mwd->pmd_order = vmci[VMCI_NUMBER_PMD_ORDER].val;
 
-	if (md->pgd_order > MAX_ORDER) {
+	if (mwd->pgd_order > MAX_ORDER) {
 		fprintf(stderr, "pgd_order is %d, only 0 or 1 are supported.\n",
-			md->pgd_order);
+			mwd->pgd_order);
 		return -1;
 	}
 
-	if (md->pmd_present && md->pmd_order > MAX_ORDER) {
+	if (mwd->pmd_present && mwd->pmd_order > MAX_ORDER) {
 		fprintf(stderr, "pmd_order is %d, only 0 or 1 are supported.\n",
-			md->pmd_order);
+			mwd->pmd_order);
 		return -1;
 	}
 
-	if (md->pte_order > MAX_ORDER) {
+	if (mwd->pte_order > MAX_ORDER) {
 		fprintf(stderr, "pte_order is %d, only 0 or 1 are supported.\n",
-			md->pte_order);
+			mwd->pte_order);
 		return -1;
 	}
 
-	if ((md->page_shift > MAX_SHIFT) || (md->page_shift < MIN_SHIFT)) {
+	if ((mwd->page_shift > MAX_SHIFT) || (mwd->page_shift < MIN_SHIFT)) {
 		fprintf(stderr, "page_shift is %d, only %d-%d are supported.\n",
-			md->page_shift, MIN_SHIFT, MAX_SHIFT);
+			mwd->page_shift, MIN_SHIFT, MAX_SHIFT);
 		return -1;
 	}
 
-	md->page_mask = ~((uint64_t) (md->page_size - 1));
+	mwd->page_mask = ~((uint64_t) (mwd->page_size - 1));
 
-	if (md->is_bigendian) {
-		md->conv32 = convbe32toh;
-		md->conv64 = convbe64toh;
-	} else {
-		md->conv32 = convle32toh;
-		md->conv64 = convle64toh;
-	}
+	mwd->conv32 = d->conv32;
+	mwd->conv64 = d->conv64;
 
-	if (md->is_64bit) {
+	if (mwd->is_64bit) {
 		i = vmci[VMCI_ADDRESS__text].found +
 			vmci[VMCI_ADDRESS__end].found +
 			vmci[VMCI_ADDRESS__phys_to_kernel_offset].found;
@@ -619,57 +648,57 @@ mips_arch_setup(struct elfc *pelf, struct kdt_data *d, void **arch_data)
 					" phys_to_kernel_offset not present\n");
 				return -1;
 			}
-			md->_text = vmci[VMCI_ADDRESS__text].val;
-			md->_end = vmci[VMCI_ADDRESS__end].val;
-			md->phys_to_kernel_offset =
+			mwd->_text = vmci[VMCI_ADDRESS__text].val;
+			mwd->_end = vmci[VMCI_ADDRESS__end].val;
+			mwd->phys_to_kernel_offset =
 				vmci[VMCI_ADDRESS__phys_to_kernel_offset].val;
-			md->mapped_kernel = 1;
+			mwd->mapped_kernel = 1;
 		} else
-			md->mapped_kernel = 0;
+			mwd->mapped_kernel = 0;
 
 		if (!vmci[VMCI_ADDRESS_CKSEG0].found) {
 			fprintf(stderr, "CKSEG0 not present in core file\n");
 			return -1;
 		}
-		md->CKSEG0 = vmci[VMCI_ADDRESS_CKSEG0].val;
+		mwd->CKSEG0 = vmci[VMCI_ADDRESS_CKSEG0].val;
 
 		if (!vmci[VMCI_ADDRESS_CKSSEG].found) {
 			fprintf(stderr, "CKSSEG not present in core file\n");
 			return -1;
 		}
-		md->CKSSEG = vmci[VMCI_ADDRESS_CKSSEG].val;
+		mwd->CKSSEG = vmci[VMCI_ADDRESS_CKSSEG].val;
 
-		if (md->pmd_present) {
-			md->pmd_shift = md->page_shift + 
-				(md->pte_order ? 10 : 9);
-			md->pgd_shift = md->pmd_shift +
-				(md->pmd_order ? 10 : 9);
+		if (mwd->pmd_present) {
+			mwd->pmd_shift = mwd->page_shift + 
+				(mwd->pte_order ? 10 : 9);
+			mwd->pgd_shift = mwd->pmd_shift +
+				(mwd->pmd_order ? 10 : 9);
 		} else {
-			md->pgd_shift = md->page_shift +
-				(md->pte_order ? 10 : 9);
+			mwd->pgd_shift = mwd->page_shift +
+				(mwd->pte_order ? 10 : 9);
 		}
 	} else {
-		if (md->pmd_present) {
-			md->pmd_shift = md->page_shift +
-				(md->pte_order ? 11 : 10);
-			md->pgd_shift = md->pmd_shift +
-				(md->pmd_order ? 11 : 10);
+		if (mwd->pmd_present) {
+			mwd->pmd_shift = mwd->page_shift +
+				(mwd->pte_order ? 11 : 10);
+			mwd->pgd_shift = mwd->pmd_shift +
+				(mwd->pmd_order ? 11 : 10);
 		} else
-			md->pgd_shift = md->page_shift +
-				(md->pte_order ? 11 : 10);
+			mwd->pgd_shift = mwd->page_shift +
+				(mwd->pte_order ? 11 : 10);
 		
 		if (!vmci[VMCI_ADDRESS_PHYS_OFFSET].found) {
 			fprintf(stderr,
 				"PHYS_OFFSET not present in core file\n");
 			return -1;
 		}
-		md->PHYS_OFFSET = vmci[VMCI_ADDRESS_PHYS_OFFSET].val;
+		mwd->PHYS_OFFSET = vmci[VMCI_ADDRESS_PHYS_OFFSET].val;
 	}
 
-	*arch_data = md;
+	*arch_data = mwd;
 
 
-	if (md->_PAGE_HUGE)
+	if (mwd->_PAGE_HUGE)
 		d->section_size_bits = 29;
 	else
 		d->section_size_bits = 28;
@@ -689,17 +718,34 @@ mips_walk(struct elfc *pelf, GElf_Addr pgd,
 	  GElf_Addr begin_addr, GElf_Addr end_addr, void *arch_data,
 	  handle_page_f handle_page, void *userdata)
 {
-	const struct mips_walk_data *md = arch_data;
+	const struct mips_walk_data *mwd = arch_data;
 	int rv;
 
-	if (md->is_64bit)
-		rv = walk_mips64(pelf, md, pgd, begin_addr, end_addr,
+	if (mwd->is_64bit)
+		rv = walk_mips64(pelf, mwd, pgd, begin_addr, end_addr,
 				 handle_page, userdata);
 	else
-		rv = walk_mips32(pelf, md, pgd, begin_addr, end_addr,
+		rv = walk_mips32(pelf, mwd, pgd, begin_addr, end_addr,
 				 handle_page, userdata);
 
 	return rv;
+}
+
+static bool
+mips_check_vaddr(struct kdt_data *d, GElf_Addr vaddr)
+{
+	struct mips_walk_data *mwd = d->arch_data;
+
+	if ((d->level == DUMP_KERNEL) &&
+	    (vaddr >= mwd->IO_BASE) &&
+	    (vaddr <= mwd->IO_BASE + 0x1000000000000000ULL))
+		/*
+		 * Don't dump the 1:1 mapping if we are only handling
+		 * kernel memory.
+		 */ 
+		return 1;
+
+	return 0;
 }
 
 struct archinfo mips_arch = {
@@ -708,5 +754,6 @@ struct archinfo mips_arch = {
 	.default_elfclass = ELFCLASS64,
 	.setup_arch_pelf = mips_arch_setup,
 	.cleanup_arch_data = mips_arch_cleanup,
-	.walk_page_table = mips_walk
+	.walk_page_table = mips_walk,
+	.skip_this_page_vaddr = mips_check_vaddr
 };

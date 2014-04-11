@@ -49,6 +49,8 @@ void subcmd_usage(const char *error, ...);
 void subcmd_help(const char *extra, const struct option *longopts,
 		 const char *helpstr[]);
 
+int parse_memrange(const char *str, uint64_t *start, uint64_t *size);
+
 /*
  * Copy all the notes from in to out.
  */
@@ -109,6 +111,16 @@ typedef int (*handle_page_f)(struct elfc *pelf,
 
 struct kdt_data;
 
+struct page_info {
+	uint64_t flags; /* unsigned long */
+	uint32_t count; /* atomic_t */
+	uint32_t mapcount; /* atomic_t */
+	GElf_Addr mapping;
+#define PAGE_MAPPING_ANON	(1)
+	GElf_Addr lru[2]; /* list_head */
+	uint64_t private; /* unsigned long */
+};
+
 struct archinfo {
 	struct link link; /* For internal use */
 	char *name;
@@ -122,20 +134,16 @@ struct archinfo {
 			       void *arch_data,
 			       handle_page_f handle_page,
 			       void *userdata);
+	bool (*skip_this_page_vaddr)(struct kdt_data *d,
+				     GElf_Addr vaddr);
+	bool (*skip_this_page_paddr)(struct kdt_data *d,
+				     struct page_info *page,
+				     GElf_Addr vaddr, GElf_Addr paddr);
 };
 struct archinfo *find_arch(int elfmachine);
 void add_arch(struct archinfo *arch);
 
 struct elfc *read_oldmem(char *oldmem, char *vmcore);
-
-struct page_info {
-	uint64_t flags; /* unsigned long */
-	uint32_t count; /* atomic_t */
-	uint32_t mapcount; /* atomic_t */
-	GElf_Addr mapping;
-	GElf_Addr lru[2]; /* list_head */
-	uint64_t private; /* unsigned long */
-};
 
 struct page_range {
 	struct link link;
@@ -143,6 +151,14 @@ struct page_range {
 	uint64_t nr_pages;
 	GElf_Addr mapaddr;
 	unsigned char *bitmap;
+};
+
+enum dump_levels {
+	DUMP_ALL,
+	DUMP_INUSE,
+	DUMP_USER,
+	DUMP_CACHE,
+	DUMP_KERNEL
 };
 
 struct kdt_data {
@@ -153,6 +169,11 @@ struct kdt_data {
 	bool is_64bit;
 	bool is_bigendian;
 	unsigned int ptrsize;
+
+	enum dump_levels level;
+
+	GElf_Addr crashkernel_start;
+	GElf_Addr crashkernel_end;
 
 	uint64_t (*conv64)(void *in);
 	uint32_t (*conv32)(void *in);
@@ -179,11 +200,15 @@ struct kdt_data {
 	uint64_t PG_private;
 	uint64_t PG_swapcache;
 	uint64_t PG_slab;
+	uint64_t PG_poison;
 
 	/* struct pglist_data offsets */
 	unsigned int pglist_data_size;
 	unsigned int node_zones_offset;
 	unsigned int nr_zones_offset;
+	unsigned int node_start_pfn_offset;
+	unsigned int node_spanned_pages_offset;
+	unsigned int node_mem_map_offset;
 
 	/* struct zones offsets */
 	unsigned int zone_size;
@@ -217,6 +242,15 @@ struct kdt_data {
 #define SECTION_MAP_MASK	(~(SECTION_MAP_LAST_BIT-1))
 
 	struct list page_maps;
+
+	uint64_t skipped_free;
+	uint64_t skipped_cache;
+	uint64_t skipped_user;
+	uint64_t skipped_poison;
+	uint64_t skipped_arch_vaddr;
+	uint64_t skipped_arch_paddr;
+	uint64_t skipped_crashkernel;
+	uint64_t not_skipped;
 };
 
 extern struct archinfo x86_64_arch;
