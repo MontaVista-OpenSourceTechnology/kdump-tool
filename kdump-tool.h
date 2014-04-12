@@ -162,6 +162,8 @@ enum dump_levels {
 };
 
 struct kdt_data {
+	int debug;
+
 	struct elfc *elf;
 	GElf_Addr pgd;
 	struct archinfo *arch;
@@ -243,6 +245,7 @@ struct kdt_data {
 
 	struct list page_maps;
 
+	uint64_t skipped_not_present;
 	uint64_t skipped_free;
 	uint64_t skipped_cache;
 	uint64_t skipped_user;

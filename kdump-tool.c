@@ -51,6 +51,12 @@
 const char *progname;
 const char *subcmd;
 
+#define dpr(...) \
+	do {					\
+		if (d->debug)			\
+			printf(__VA_ARGS__);	\
+	} while(0)
+
 #define DEFAULT_OLDMEM "/dev/mem"
 void
 subcmd_usage(const char *error, ...)
@@ -423,6 +429,8 @@ page_addr_mark_skipped(struct kdt_data *d, GElf_Addr addr, unsigned int count)
 {
 	struct page_range *range;
 	uint64_t pfno;
+	int dummy1;
+	GElf_Off dummy2;
 
 	range = find_page_addr_range(d, addr);
 	if (!range)
@@ -430,18 +438,21 @@ page_addr_mark_skipped(struct kdt_data *d, GElf_Addr addr, unsigned int count)
 
 	pfno = (addr - range->mapaddr) / d->size_page;
 
-	printf("Marking inuse: paddr %llx, page %llu (%d pages)\n",
-	       (unsigned long long) (pfno + range->start_page) << d->page_shift,
-	       (unsigned long long) (pfno + range->start_page),
-	       count);
+	dpr("Marking skipped: paddr %llx, page %llu (%d pages)\n",
+	    (unsigned long long) (pfno + range->start_page) << d->page_shift,
+	    (unsigned long long) (pfno + range->start_page),
+	    count);
 	while (count) {
 		if (pfno >= range->nr_pages) {
 			fprintf(stderr, "Page free maps are insane\n");
 			return -1;
 		}
-		range->bitmap[pfno / 8] |= (1 << (pfno % 8));
+		if (elfc_pmem_offset(d->elf, addr, d->page_size,
+				     &dummy1, &dummy2) != -1)
+			range->bitmap[pfno / 8] |= (1 << (pfno % 8));
 		pfno++;
 		count--;
+		addr += d->page_size;
 	}
 	return 0;
 }
@@ -457,7 +468,7 @@ static bool
 is_pfn_skipped(struct kdt_data *d, struct page_range *range, uint64_t pfn)
 {
 	pfn -= range->start_page;
-	return (range->bitmap[pfn / 8] && (1 << (pfn % 8)));
+	return (range->bitmap[pfn / 8] & (1 << (pfn % 8)));
 }
 
 struct vfetchinfo {
@@ -866,7 +877,7 @@ out_err:
 static int
 read_flat_page_maps(struct kdt_data *d, struct vmcoreinfo_data *vmci)
 {
-	printf("Flat\n");
+	dpr("Flat\n");
 
 	VMCI_CHECK_FOUND(vmci, SYMBOL, contig_page_data);
 	VMCI_CHECK_FOUND(vmci, OFFSET, pglist_data__node_mem_map);
@@ -923,10 +934,10 @@ read_sparse_maps(struct kdt_data *d, struct vmcoreinfo_data *vmci, bool extreme)
 	unsigned char *mem_sections = NULL;
 	unsigned int mem_sections_size;
 	unsigned char *sections = NULL;
-	unsigned int sections_size;
+	unsigned int sections_size = 0; /* shut up compiler warning. */
 	unsigned char *pglist;
 
-	printf("Sparse %d %s\n", extreme, extreme ? "extreme" : "static");
+	dpr("Sparse %d %s\n", extreme, extreme ? "extreme" : "static");
 
 	d->pages_per_section = 1 << (d->section_size_bits - d->page_shift);
 	if (extreme) {
@@ -1007,7 +1018,7 @@ read_discontig_maps(struct kdt_data *d, struct vmcoreinfo_data *vmci)
 	unsigned int count, i;
 	unsigned char *node_data;
 
-	printf("Discontig\n");
+	dpr("Discontig\n");
 
 	VMCI_CHECK_FOUND(vmci, SYMBOL, node_data);
 	node_data_addr = vmci[VMCI_SYMBOL_node_data].val;
@@ -1369,7 +1380,8 @@ handle_skip(struct kdt_data *d, char *type,
 	    uint64_t pfn, GElf_Addr paddr, GElf_Addr vaddr)
 {
 	set_pfn_skipped(d, range, pfn);
-	print_pginfo("Skipping ", type, page, paddr, vaddr);
+	if (d->debug)
+		print_pginfo("Skipping ", type, page, paddr, vaddr);
 }
 
 static int
@@ -1386,7 +1398,13 @@ process_page(struct velf_data *dpage,
 	struct page_range *range;
 	struct page_info page;
 
-	if (d->arch->skip_this_page_vaddr &&
+	present = elfc_pmem_offset(d->elf, paddr, pgsize, &pnum, &dummy) != -1;
+	if (!present) {
+		d->skipped_not_present++;
+		return 0;
+	}
+
+	if (vaddr && d->arch->skip_this_page_vaddr &&
 	    d->arch->skip_this_page_vaddr(d, vaddr)) {
 		/* Do not mark the page, it may be ok under another vaddr. */
 		d->skipped_arch_vaddr++;
@@ -1408,10 +1426,9 @@ process_page(struct velf_data *dpage,
 
 	range = find_pfn_range(d, pfn);
 	if (!range) {
-		fprintf(stderr,
-			"Page not present in range, paddr %llx vaddr %llx\n",
-			(unsigned long long) paddr,
-			(unsigned long long) vaddr);
+		dpr("Page not present in range, paddr %llx vaddr %llx\n",
+		    (unsigned long long) paddr,
+		    (unsigned long long) vaddr);
 		return 0;
 	}
 
@@ -1420,13 +1437,11 @@ process_page(struct velf_data *dpage,
 
 	rv = find_page_by_pfn(d, range, pfn, &page);
 	if (rv == -1) {
-		fprintf(stderr, "Page not present, paddr %llx vaddr %llx\n",
-			(unsigned long long) paddr,
-			(unsigned long long) vaddr);
+		dpr("Page not present, paddr %llx vaddr %llx\n",
+		    (unsigned long long) paddr,
+		    (unsigned long long) vaddr);
 		return 0;
 	}
-
-	present = elfc_pmem_offset(d->elf, paddr, pgsize, &pnum, &dummy) != -1;
 
 	/* Now see if we want this page. */
 	if (d->arch->skip_this_page_paddr &&
@@ -1473,7 +1488,8 @@ process_page(struct velf_data *dpage,
 	}
 
 	d->not_skipped++;
-	print_pginfo("Accepting", "", &page, paddr, vaddr);
+	if (d->debug)
+		print_pginfo("Accepting", "", &page, paddr, vaddr);
 
 	/*
 	 * We require entries to be contiguous in physical and virtual
@@ -1482,8 +1498,9 @@ process_page(struct velf_data *dpage,
 	 * to have no segments larger than 4GB so the offset remains <
 	 * UINT32_MAX.  Preserve that in the velf file.
 	 */
-	if (dpage->next_vaddr != vaddr || dpage->next_paddr != paddr ||
-	    !present || dpage->prev_pnum != pnum) {
+	if ((vaddr && (dpage->next_vaddr != vaddr)) ||
+	    dpage->next_paddr != paddr ||
+	    dpage->prev_pnum != pnum) {
 		if (dpage->prev_present) {
 			rv = gen_new_phdr(pelf, dpage);
 			if (rv == -1)
@@ -1506,16 +1523,42 @@ process_page(struct velf_data *dpage,
 }
 
 static int
-velf_cleanup(struct elfc *pelf, struct velf_data *dpage)
+velf_cleanup(struct elfc *pelf, struct velf_data *dpage, bool use_vaddr)
 {
 	int rv;
 
-	if ((dpage->next_vaddr - dpage->last_pgsize) != dpage->start_vaddr) {
+	if ((use_vaddr &&
+	     ((dpage->next_vaddr - dpage->last_pgsize) != dpage->start_vaddr))
+	    || ((dpage->next_paddr - dpage->last_pgsize) != dpage->start_paddr))
+	{
 		rv = gen_new_phdr(pelf, dpage);
 		if (rv)
 			return -1;
 	}
 	return 0;
+}
+
+static void
+print_skipped(struct kdt_data *d)
+{
+	printf("Skipped %llu not present pages\n",
+	       (unsigned long long) d->skipped_not_present);
+	printf("        %llu free pages\n",
+	       (unsigned long long) d->skipped_free);
+	printf("        %llu cache pages\n",
+	       (unsigned long long) d->skipped_cache);
+	printf("        %llu user pages\n",
+	       (unsigned long long) d->skipped_user);
+	printf("        %llu poison pages\n",
+	       (unsigned long long) d->skipped_poison);
+	printf("        %llu pages in crashkernel\n",
+	       (unsigned long long) d->skipped_crashkernel);
+	printf("        %llu pages denied by arch vaddr\n",
+	       (unsigned long long) d->skipped_arch_vaddr);
+	printf("        %llu pages denied by arch paddr\n",
+	       (unsigned long long) d->skipped_arch_paddr);
+	printf("Accepted %llu pages\n",
+	       (unsigned long long) d->not_skipped);
 }
 
 static int
@@ -1531,6 +1574,7 @@ topelf(int argc, char *argv[])
 		{ "vmcore",	required_argument,	NULL, 'v' },
 		{ "elfclass",	required_argument,	NULL, 'c' },
 		{ "level",	required_argument,	NULL, 'l' },
+		{ "debug",	no_argument,		NULL, 'd' },
 		{ NULL }
 	};
 	static const char *helpstr[] = {
@@ -1540,6 +1584,7 @@ topelf(int argc, char *argv[])
 		"The vmcore file, defaults to /proc/vmcore",
 		"Set the elfclass (either 32 or 64)",
 		"Set the dump level: all, inuse, user, cache, or kernel",
+		"increment the debug level",
 		NULL
 	};
 	int ofd = 1;
@@ -1563,7 +1608,7 @@ topelf(int argc, char *argv[])
 	memset(d, 0, sizeof(*d));
 	for (;;) {
 		int curr_optind = optind;
-		int c = getopt_long(argc, argv, "+ho:i:v:c:l:", longopts,
+		int c = getopt_long(argc, argv, "+ho:i:v:c:l:d", longopts,
 				    NULL);
 		if (c == -1)
 			break;
@@ -1597,6 +1642,9 @@ topelf(int argc, char *argv[])
 		case 'h':
 			subcmd_help("", longopts, helpstr);
 			return 0;
+		case 'd':
+			d->debug++;
+			break;
 		case '?':
 			subcmd_usage("Unknown option: %s\n", argv[curr_optind]);
 		}
@@ -1702,9 +1750,11 @@ topelf(int argc, char *argv[])
 		}
 	}
 
-	rv = velf_cleanup(d->elf, &dpage);
+	rv = velf_cleanup(d->elf, &dpage, false);
 	if (rv == -1)
 		goto out_err;
+
+	print_skipped(d);
 
 	rv = elfc_write(velf);
 	if (rv == -1) {
@@ -1768,6 +1818,7 @@ tovelf(int argc, char *argv[])
 		{ "physpgd",	required_argument,	NULL, 'P' },
 		{ "elfclass",	required_argument,	NULL, 'c' },
 		{ "level",	required_argument,	NULL, 'l' },
+		{ "debug",	no_argument,		NULL, 'd' },
 		{ NULL }
 	};
 	static const char *helpstr[] = {
@@ -1780,6 +1831,7 @@ tovelf(int argc, char *argv[])
 		"The physical address of the kernel page descriptor",
 		"Set the elfclass (either 32 or 64)",
 		"Set the dump level: all, inuse, user, cache, or kernel",
+		"increment the debug level",
 		NULL
 	};
 	int fd = -1;
@@ -1803,7 +1855,7 @@ tovelf(int argc, char *argv[])
 	memset(d, 0, sizeof(*d));
 	for (;;) {
 		int curr_optind = optind;
-		int c = getopt_long(argc, argv, "+ho:i:v:I:P:c:l:", longopts,
+		int c = getopt_long(argc, argv, "+ho:i:v:I:P:c:l:d", longopts,
 				    NULL);
 		if (c == -1)
 			break;
@@ -1857,6 +1909,9 @@ tovelf(int argc, char *argv[])
 		case 'h':
 			subcmd_help("", longopts, helpstr);
 			return 0;
+		case 'd':
+			d->debug++;
+			break;
 		case '?':
 			subcmd_usage("Unknown option: %s\n", argv[curr_optind]);
 		}
@@ -1960,26 +2015,11 @@ nopgd:
 	if (rv == -1)
 		goto out_err;
 
-	rv = velf_cleanup(d->elf, &dpage);
+	rv = velf_cleanup(d->elf, &dpage, true);
 	if (rv == -1)
 		goto out_err;
 
-	printf("Skipped %llu free pages\n",
-	       (unsigned long long) d->skipped_free);
-	printf("        %llu cache pages\n",
-	       (unsigned long long) d->skipped_cache);
-	printf("        %llu user pages\n",
-	       (unsigned long long) d->skipped_user);
-	printf("        %llu poison pages\n",
-	       (unsigned long long) d->skipped_poison);
-	printf("        %llu pages in crashkernel\n",
-	       (unsigned long long) d->skipped_crashkernel);
-	printf("        %llu pages denied by arch vaddr\n",
-	       (unsigned long long) d->skipped_arch_vaddr);
-	printf("        %llu pages denied by arch paddr\n",
-	       (unsigned long long) d->skipped_arch_paddr);
-	printf("Accepted %llu pages\n",
-	       (unsigned long long) d->not_skipped);
+	print_skipped(d);
 
 	rv = elfc_write(velf);
 	if (rv == -1) {

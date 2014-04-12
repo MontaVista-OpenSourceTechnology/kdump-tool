@@ -481,8 +481,6 @@ walk_mips64(struct elfc *pelf, const struct mips_walk_data *mwd,
 	GElf_Addr maxaddr;
 	uint64_t start, end;
 
-	printf("PGD = %llx\n", (unsigned long long) pgdaddr);
-
 	/*
 	 * Add the default page tables for iomem and kernel.
 	 * This is ioremap addresses and the kernel address space.
@@ -539,7 +537,6 @@ walk_mips64(struct elfc *pelf, const struct mips_walk_data *mwd,
 	for (i = start; i < pgd_count; i++) {
 		GElf_Addr lpgd = mwd->conv64(&pgd[i]);
 
-		printf("PGD[%d] = %llx\n", i, (unsigned long long) lpgd);
 		if (mips_virt_to_phys64(mwd, pgdaddr, i, lpgd, &lpgd) == -1)
 			continue;
 
@@ -698,7 +695,7 @@ mips_arch_setup(struct elfc *pelf, struct kdt_data *d, void **arch_data)
 	*arch_data = mwd;
 
 
-	if (mwd->_PAGE_HUGE)
+	if ((mwd->_PAGE_HUGE) && (d->page_size == 65536))
 		d->section_size_bits = 29;
 	else
 		d->section_size_bits = 28;
@@ -736,15 +733,20 @@ mips_check_vaddr(struct kdt_data *d, GElf_Addr vaddr)
 {
 	struct mips_walk_data *mwd = d->arch_data;
 
-	if ((d->level == DUMP_KERNEL) &&
-	    (vaddr >= mwd->IO_BASE) &&
-	    (vaddr <= mwd->IO_BASE + 0x1000000000000000ULL))
+	if (d->level == DUMP_KERNEL) {
 		/*
 		 * Don't dump the 1:1 mapping if we are only handling
 		 * kernel memory.
 		 */ 
-		return 1;
-
+		if (mwd->IO_BASE &&
+		    (vaddr >= mwd->IO_BASE) &&
+		    (vaddr <= mwd->IO_BASE + 0x1000000000000000ULL))
+			return 1;
+		if (mwd->PAGE_OFFSET &&
+		    (vaddr >= mwd->PAGE_OFFSET) &&
+		    (vaddr <= mwd->PAGE_OFFSET + 0x1000000000000000ULL))
+			return 1;
+	}
 	return 0;
 }
 

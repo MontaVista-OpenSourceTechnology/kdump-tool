@@ -170,7 +170,7 @@ fdio_get_data(struct elfc *e, GElf_Phdr *phdr, void *data,
 	map = mmap(NULL, mapsize + loff, PROT_READ, MAP_SHARED, d->fd, pos);
 	if (map == MAP_FAILED)
 		return -1;
-	memcpy(wdata, map + loff, mapsize);
+	memcpy(wdata, map + loff, mapsize - loff);
 	munmap(map, mapsize + loff);
 	return 0;
 }
@@ -327,7 +327,7 @@ read_oldmem(char *oldmem, char *vmcore)
 	struct vmcoreinfo_data vmci[] = {
 		{ "PAGESIZE", 10 },
 		{ "SYMBOL(swapper_pg_dir)", 16 },
-		{ "ADDRESS(phys_pg_ptr)", 16 },
+		{ "ADDRESS(phys_pgd_ptr)", 16 },
 		{ NULL }
 	};
 	int page_size;
