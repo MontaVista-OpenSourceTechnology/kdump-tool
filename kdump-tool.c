@@ -424,6 +424,9 @@ find_page_addr_range(struct kdt_data *d, GElf_Addr addr)
 	return NULL;
 }
 
+/*
+ * Given a page's "struct page" address, mark it skipped.
+ */
 static int
 page_addr_mark_skipped(struct kdt_data *d, GElf_Addr addr, unsigned int count)
 {
@@ -431,15 +434,17 @@ page_addr_mark_skipped(struct kdt_data *d, GElf_Addr addr, unsigned int count)
 	uint64_t pfno;
 	int dummy1;
 	GElf_Off dummy2;
+	GElf_Addr paddr;
 
 	range = find_page_addr_range(d, addr);
 	if (!range)
 		return -1;
 
 	pfno = (addr - range->mapaddr) / d->size_page;
+	paddr = (pfno + range->start_page) << d->page_shift;
 
 	dpr("Marking skipped: paddr %llx, page %llu (%d pages)\n",
-	    (unsigned long long) (pfno + range->start_page) << d->page_shift,
+	    (unsigned long long) paddr,
 	    (unsigned long long) (pfno + range->start_page),
 	    count);
 	while (count) {
@@ -447,12 +452,12 @@ page_addr_mark_skipped(struct kdt_data *d, GElf_Addr addr, unsigned int count)
 			fprintf(stderr, "Page free maps are insane\n");
 			return -1;
 		}
-		if (elfc_pmem_offset(d->elf, addr, d->page_size,
+		if (elfc_pmem_offset(d->elf, paddr, d->page_size,
 				     &dummy1, &dummy2) != -1)
 			range->bitmap[pfno / 8] |= (1 << (pfno % 8));
 		pfno++;
 		count--;
-		addr += d->page_size;
+		paddr += d->page_size;
 	}
 	return 0;
 }
@@ -460,6 +465,7 @@ page_addr_mark_skipped(struct kdt_data *d, GElf_Addr addr, unsigned int count)
 static void
 set_pfn_skipped(struct kdt_data *d, struct page_range *range, uint64_t pfn)
 {
+	dpr("Marking skipped: page %llu\n", (unsigned long long) pfn);
 	pfn -= range->start_page;
 	range->bitmap[pfn / 8] |= 1 << (pfn % 8);
 }
@@ -1364,14 +1370,16 @@ static void
 print_pginfo(char *op, char *type, struct page_info *page,
 	     GElf_Addr paddr, GElf_Addr vaddr)
 {
-	printf("%s%s page, paddr %llx vaddr %llx, f:%llx c:%d m:%llx mc:%d\n",
+	printf("%s%s page, paddr %llx vaddr %llx, flags:%llx count:%d "
+	       "mapping:%llx mapcount:%d private:%llx\n",
 	       op, type,
 	       (unsigned long long) paddr,
 	       (unsigned long long) vaddr,
 	       (unsigned long long) page->flags,
 	       page->count,
 	       (unsigned long long) page->mapping,
-	       page->mapcount);
+	       page->mapcount,
+	       (unsigned long long) page->private);
 }
 
 static void
@@ -1394,20 +1402,29 @@ process_page(struct velf_data *dpage,
 	struct kdt_data *d = dpage->d;
 	GElf_Off dummy;
 	int pnum, present, rv;
-	uint64_t pfn;
+	uint64_t pfn = paddr >> d->page_shift;
 	struct page_range *range;
 	struct page_info page;
 
-	present = elfc_pmem_offset(d->elf, paddr, pgsize, &pnum, &dummy) != -1;
-	if (!present) {
-		d->skipped_not_present++;
+	range = find_pfn_range(d, pfn);
+	if (!range) {
+		dpr("Page not present in range, paddr %llx vaddr %llx\n",
+		    (unsigned long long) paddr,
+		    (unsigned long long) vaddr);
 		return 0;
 	}
 
-	if (vaddr && d->arch->skip_this_page_vaddr &&
-	    d->arch->skip_this_page_vaddr(d, vaddr)) {
-		/* Do not mark the page, it may be ok under another vaddr. */
-		d->skipped_arch_vaddr++;
+	if (is_pfn_skipped(d, range, pfn))
+		/* Already been handled. */
+		return 0;
+
+	present = elfc_pmem_offset(d->elf, paddr, pgsize, &pnum, &dummy) != -1;
+	if (!present) {
+		dpr("Page not present in memory, paddr %llx vaddr %llx\n",
+		    (unsigned long long) paddr,
+		    (unsigned long long) vaddr);
+		set_pfn_skipped(d, range, pfn);
+		d->skipped_not_present++;
 		return 0;
 	}
 
@@ -1422,32 +1439,11 @@ process_page(struct velf_data *dpage,
 		return 0;
 	}
 
-	pfn = paddr >> d->page_shift;
-
-	range = find_pfn_range(d, pfn);
-	if (!range) {
-		dpr("Page not present in range, paddr %llx vaddr %llx\n",
-		    (unsigned long long) paddr,
-		    (unsigned long long) vaddr);
-		return 0;
-	}
-
-	if (is_pfn_skipped(d, range, pfn))
-		return 0;
-
 	rv = find_page_by_pfn(d, range, pfn, &page);
 	if (rv == -1) {
 		dpr("Page not present, paddr %llx vaddr %llx\n",
 		    (unsigned long long) paddr,
 		    (unsigned long long) vaddr);
-		return 0;
-	}
-
-	/* Now see if we want this page. */
-	if (d->arch->skip_this_page_paddr &&
-	    d->arch->skip_this_page_paddr(d, &page, vaddr, paddr)) {
-		d->skipped_arch_paddr++;
-		handle_skip(d, "arch_paddr", &page, range, pfn, paddr, vaddr);
 		return 0;
 	}
 
@@ -1553,10 +1549,6 @@ print_skipped(struct kdt_data *d)
 	       (unsigned long long) d->skipped_poison);
 	printf("        %llu pages in crashkernel\n",
 	       (unsigned long long) d->skipped_crashkernel);
-	printf("        %llu pages denied by arch vaddr\n",
-	       (unsigned long long) d->skipped_arch_vaddr);
-	printf("        %llu pages denied by arch paddr\n",
-	       (unsigned long long) d->skipped_arch_paddr);
 	printf("Accepted %llu pages\n",
 	       (unsigned long long) d->not_skipped);
 }

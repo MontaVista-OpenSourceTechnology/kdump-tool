@@ -728,28 +728,6 @@ mips_walk(struct elfc *pelf, GElf_Addr pgd,
 	return rv;
 }
 
-static bool
-mips_check_vaddr(struct kdt_data *d, GElf_Addr vaddr)
-{
-	struct mips_walk_data *mwd = d->arch_data;
-
-	if (d->level == DUMP_KERNEL) {
-		/*
-		 * Don't dump the 1:1 mapping if we are only handling
-		 * kernel memory.
-		 */ 
-		if (mwd->IO_BASE &&
-		    (vaddr >= mwd->IO_BASE) &&
-		    (vaddr <= mwd->IO_BASE + 0x1000000000000000ULL))
-			return 1;
-		if (mwd->PAGE_OFFSET &&
-		    (vaddr >= mwd->PAGE_OFFSET) &&
-		    (vaddr <= mwd->PAGE_OFFSET + 0x1000000000000000ULL))
-			return 1;
-	}
-	return 0;
-}
-
 struct archinfo mips_arch = {
 	.name = "mips",
 	.elfmachine = EM_MIPS,
@@ -757,5 +735,4 @@ struct archinfo mips_arch = {
 	.setup_arch_pelf = mips_arch_setup,
 	.cleanup_arch_data = mips_arch_cleanup,
 	.walk_page_table = mips_walk,
-	.skip_this_page_vaddr = mips_check_vaddr
 };

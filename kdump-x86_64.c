@@ -263,21 +263,6 @@ x86_64_walk(struct elfc *pelf, GElf_Addr pgd,
 	return 0;
 }
 
-static bool
-x86_64_check_vaddr(struct kdt_data *d, GElf_Addr vaddr)
-{
-	if ((d->level == DUMP_KERNEL) &&
-	    (vaddr >= 0xffff880000000000ULL) &&
-	    (vaddr <= 0xffffc7ffffffffffULL))
-		/*
-		 * Don't dump the 1:1 mapping if we are only handling
-		 * kernel memory.
-		 */ 
-		return 1;
-
-	return 0;
-}
-
 struct archinfo x86_64_arch = {
 	.name = "x86_64",
 	.elfmachine = EM_X86_64,
@@ -285,5 +270,4 @@ struct archinfo x86_64_arch = {
 	.setup_arch_pelf = x86_64_arch_setup,
 	.cleanup_arch_data = x86_64_arch_cleanup,
 	.walk_page_table = x86_64_walk,
-	.skip_this_page_vaddr = x86_64_check_vaddr
 };

@@ -134,11 +134,6 @@ struct archinfo {
 			       void *arch_data,
 			       handle_page_f handle_page,
 			       void *userdata);
-	bool (*skip_this_page_vaddr)(struct kdt_data *d,
-				     GElf_Addr vaddr);
-	bool (*skip_this_page_paddr)(struct kdt_data *d,
-				     struct page_info *page,
-				     GElf_Addr vaddr, GElf_Addr paddr);
 };
 struct archinfo *find_arch(int elfmachine);
 void add_arch(struct archinfo *arch);
@@ -250,8 +245,6 @@ struct kdt_data {
 	uint64_t skipped_cache;
 	uint64_t skipped_user;
 	uint64_t skipped_poison;
-	uint64_t skipped_arch_vaddr;
-	uint64_t skipped_arch_paddr;
 	uint64_t skipped_crashkernel;
 	uint64_t not_skipped;
 };
