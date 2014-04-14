@@ -430,6 +430,88 @@ add_phys_pgd_ptr(struct elfc *elf, struct elfc *velf, GElf_Addr virt_pgdir)
 	return 0;
 }
 
+/*
+ * All the following structures are stolen and modified from
+ * include/linux/elfcore.h and adjusted so they can work cross.
+ */
+struct kd_elf_siginfo
+{
+	int32_t	si_signo;			/* signal number */
+	int32_t	si_code;			/* extra code */
+	int32_t	si_errno;			/* errno */
+};
+
+typedef int32_t kd_pid_t;
+
+struct kd_elf_prstatus32
+{
+	struct kd_elf_siginfo pr_info;
+	int16_t	pr_cursig;
+	uint32_t pr_sigpend;
+	uint32_t pr_sighold;
+	kd_pid_t pr_pid;
+};
+
+struct kd_elf_prstatus64
+{
+	struct kd_elf_siginfo pr_info;
+	int16_t	pr_cursig;
+	uint64_t pr_sigpend;
+	uint64_t pr_sighold;
+	kd_pid_t pr_pid;
+};
+
+struct fixup_reg_info
+{
+	bool is_64bit;
+	int count;
+};
+
+/*
+ * Each CPU gets a prstatus note in the core.  However, the idle
+ * thread always has pid 0, so if you have multiple CPUs running the
+ * idle thread, you will get pid 0 multiple times.  This confuses gdb
+ * and it looses all but one of the CPUs threads.  Instead, if the
+ * idle thread is running, set the pid to -cpu to keep things sane.
+ */
+static int
+fixup_reg_pid(GElf_Word type, const char *name, size_t namelen,
+	      void *data, size_t data_len, void *userdata)
+{
+	struct fixup_reg_info *fri = userdata;
+
+	if (type != NT_PRSTATUS)
+		return 0;
+
+	/* set pr_pid to -cpu if the idle task (0) was running */
+	if (fri->is_64bit) {
+		struct kd_elf_prstatus64 *pr = data;
+
+		if (data_len < sizeof(*pr)) {
+			fprintf(stderr, "Invalid note size: %d bytes\n",
+				(int) data_len);
+			return -1;
+		}
+
+		if (pr->pr_pid == 0)
+			pr->pr_pid = -fri->count;
+	} else {
+		struct kd_elf_prstatus32 *pr = data;
+
+		if (data_len < sizeof(*pr)) {
+			fprintf(stderr, "Invalid note size: %d bytes\n",
+				(int) data_len);
+			return -1;
+		}
+
+		if (pr->pr_pid == 0)
+			pr->pr_pid = -fri->count;
+	}
+	fri->count++;
+
+	return 0;
+}
+
 struct elfc *
 read_oldmem(char *oldmem, char *vmcore)
 {
@@ -446,11 +528,13 @@ read_oldmem(char *oldmem, char *vmcore)
 		{ "PAGESIZE", 10 },
 		{ "SYMBOL(swapper_pg_dir)", 16 },
 		{ "ADDRESS(phys_pgd_ptr)", 16 },
+		{ "SIZE(list_head)", 10 },
 		{ NULL }
 	};
 	int page_size;
 	int memr;
 	struct memrange_info mr;
+	struct fixup_reg_info fri;
 
 	list_init(&mems);
 
@@ -504,7 +588,23 @@ read_oldmem(char *oldmem, char *vmcore)
 	 */ 
 	elfc_setclass(elf, ELFCLASS64);
 	elfc_setencoding(elf, elfc_getencoding(velf));
-	copy_elf_notes(elf, velf);
+
+	if (!vmci[3].found) {
+		fprintf(stderr,
+			"Error: SIZE(list_head) not in vmcore\n");
+	}
+	if (vmci[3].val == 8) {
+		fri.is_64bit = false;
+	} else if (vmci[3].val == 16) {
+		fri.is_64bit = true;
+	} else {
+		fprintf(stderr, "Error: SIZE(list_head) not valid: %llu\n",
+			(unsigned long long) vmci[0].val);
+		goto out_err;
+	}
+	fri.count = 0;
+
+	copy_elf_notes(elf, velf, fixup_reg_pid, &fri);
 
 	if (!vmci[2].found) {
 		/* Add phys_pgd_ptr to the notes if it doesn't already exist */

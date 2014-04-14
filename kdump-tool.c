@@ -331,7 +331,10 @@ handle_vminfo_notes(struct elfc *elf, struct vmcoreinfo_data *vals)
 }
 
 int
-copy_elf_notes(struct elfc *out, struct elfc *in)
+copy_elf_notes(struct elfc *out, struct elfc *in,
+	       int (*fixup)(GElf_Word type, const char *name, size_t namelen,
+			    void *data, size_t data_len, void *userdata),
+	       void *userdata)
 {
 	int i;
 	int nr_notes = elfc_get_num_notes(in);
@@ -341,18 +344,45 @@ copy_elf_notes(struct elfc *out, struct elfc *in)
 
 	for (i = 0; i < nr_notes; i++) {
 		const char *name;
-		const void *data;
+		const void *rdata;
+		void *data = NULL;
 		size_t namelen, datalen;
 		GElf_Word type;
 		int rv = elfc_get_note(in, i, &type, &name, &namelen,
-				       &data, &datalen);
+				       &rdata, &datalen);
 
 		if (rv == -1)
 			return -1;
 
-		rv = elfc_add_note(out, type, name, namelen, data, datalen);
+		if (fixup) {
+			/*
+			 * Data may need to be modified, so we need
+			 * our own memory for that.
+			 */
+			data = malloc(datalen);
+			if (!data) {
+				fprintf(stderr, "Out of memory getting note"
+					" data\n");
+				return -1;
+			}
+			memcpy(data, rdata, datalen);
+
+			rv = fixup(type, name, namelen, data, datalen,
+				   userdata);
+			if (rv)
+				goto out_err;
+			rdata = data;
+		}
+		rv = elfc_add_note(out, type, name, namelen, rdata, datalen);
+		if (data)
+			free(data);
 		if (rv == -1)
-			return -1;
+			goto out_err;
+		continue;
+	out_err:
+		if (data)
+			free(data);
+		return -1;
 	}	
 	return 0;
 }
@@ -1636,7 +1666,7 @@ topelf(int argc, char *argv[])
 	}
 	elfc_setmachine(velf, elfc_getmachine(d->elf));
 	elfc_setencoding(velf, elfc_getencoding(d->elf));
-	copy_elf_notes(velf, d->elf);
+	copy_elf_notes(velf, d->elf, NULL, NULL);
 
 	elfc_set_fd(velf, ofd);
 
@@ -1920,7 +1950,7 @@ nopgd:
 	}
 	elfc_setmachine(velf, elfc_getmachine(d->elf));
 	elfc_setencoding(velf, elfc_getencoding(d->elf));
-	copy_elf_notes(velf, d->elf);
+	copy_elf_notes(velf, d->elf, NULL, NULL);
 
 	elfc_set_fd(velf, ofd);
 

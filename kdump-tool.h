@@ -54,7 +54,11 @@ int parse_memrange(const char *str, uint64_t *start, uint64_t *size);
 /*
  * Copy all the notes from in to out.
  */
-int copy_elf_notes(struct elfc *out, struct elfc *in);
+int copy_elf_notes(struct elfc *out, struct elfc *in,
+		   int (*fixup)(GElf_Word type, const char *name,
+				size_t namelen,	void *data, size_t data_len,
+				void *userdata),
+		   void *userdata);
 
 /*
  * Scan the vmcoreinfo in the notes looking for values.  A value
