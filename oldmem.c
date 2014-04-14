@@ -188,41 +188,95 @@ struct memrange {
 	uint64_t size;
 };
 
-static struct memrange init_memrange = { 0, -1ULL };
+struct memrange_info {
+	struct memrange *memrange;
+	int num_memrange;
+};
 
-static struct memrange *memrange = &init_memrange;
-static int num_memrange = 1;
-
-static int memrange_handler(const char *name, const char *str,
-			    int strlen, void *userdata)
+static int
+add_memrange(struct memrange_info *mr, GElf_Addr paddr, GElf_Addr size)
 {
-	uint64_t start, size;
 	static struct memrange *new_memrange;
 
-	if (memrange == &init_memrange) {
-		num_memrange = 0;
-		memrange = NULL;
+	new_memrange = malloc(sizeof(*new_memrange) * (mr->num_memrange + 1));
+	if (!new_memrange) {
+		fprintf(stderr, "Out of memory allocation new memrange\n");
+		return -1;
 	}
-
-	if (parse_memrange(str, &start, &size) == -1)
-		goto out_err;
-
-	new_memrange = malloc(sizeof(*new_memrange) * (num_memrange + 1));
-	if (memrange) {
-		memcpy(new_memrange, memrange, 
-		       sizeof(*new_memrange) * num_memrange);
-		free(memrange);
+	if (mr->memrange) {
+		memcpy(new_memrange, mr->memrange, 
+		       sizeof(*new_memrange) * mr->num_memrange);
+		free(mr->memrange);
 	}
-	memrange = new_memrange;
-	memrange[num_memrange].start = start;
-	memrange[num_memrange].size = size;
-	num_memrange++;
+	mr->memrange = new_memrange;
+	mr->memrange[mr->num_memrange].start = paddr;
+	mr->memrange[mr->num_memrange].size = size;
+	mr->num_memrange++;
 
 	return 0;
+}
 
-out_err:
-	fprintf(stderr, "Invalid memrange in vmcoreinfo\n");
-	return -1;
+static void
+merge_memranges(struct memrange_info *mr)
+{
+	struct memrange tmp;
+	int i, j;
+
+	/* Bubble sort the memranges by start address. */
+	for (i = 0; i < mr->num_memrange; i++) {
+		for (j = mr->num_memrange - 1; j > i; j--) {
+			if (mr->memrange[j].start < mr->memrange[j - 1].start) {
+				tmp = mr->memrange[j];
+				mr->memrange[j] = mr->memrange[j - 1];
+				mr->memrange[j - 1] = tmp;
+			}
+		}		
+	}
+
+	for (i = 0; i < mr->num_memrange - 1; ) {
+		uint64_t end = mr->memrange[i].start + mr->memrange[i].size;
+		j = i + 1;
+		if (end >= mr->memrange[j].start) {
+			/* We can merge with the next memory region. */
+			if (end < (mr->memrange[j].start +
+				   mr->memrange[j].size))
+				end = (mr->memrange[j].start +
+				       mr->memrange[j].size);
+			mr->memrange[i].size = end - mr->memrange[i].start;
+			memmove(&mr->memrange[j], &mr->memrange[j + 1],
+				(sizeof(struct memrange) *
+				 (mr->num_memrange - j - 1)));
+			mr->num_memrange--;
+		} else
+			i++;
+	}
+}
+
+static int
+get_memranges(struct memrange_info *mr, struct elfc *velf)
+{
+	int rv;
+	GElf_Phdr phdr;
+	int i;
+	int nr_phdr;
+
+	nr_phdr = elfc_get_num_phdrs(velf);
+	for (i = 0; i < nr_phdr; i++) {
+		rv = elfc_get_phdr(velf, i, &phdr);
+		if (rv == -1) {
+			fprintf(stderr,
+				"Error getting oldmem phdr %d: %s\n",
+				i, strerror(elfc_get_errno(velf)));
+			return -1;
+		}
+		if (phdr.p_memsz) {
+			rv = add_memrange(mr, phdr.p_paddr, phdr.p_memsz);
+			if (rv == -1)
+				return -1;
+		}
+	}
+	merge_memranges(mr);
+	return 0;
 }
 
 static sigjmp_buf acc_err_jump;
@@ -312,6 +366,70 @@ out_err:
 	goto out;
 }
 
+/*
+ * Once we process vmcore, we don't have a good way to find the physical
+ * address of the page directory, but it's required for doing memory walks.
+ * Figure it out now and add it to the notes.
+ */
+static int
+add_phys_pgd_ptr(struct elfc *elf, struct elfc *velf, GElf_Addr virt_pgdir)
+{
+	int rv;
+	GElf_Addr phys_pgdir;
+	char buf[128];
+
+	rv = elfc_vmem_to_pmem(velf, virt_pgdir, &phys_pgdir);
+	if (rv == -1) {
+		int err = elfc_get_errno(velf);
+		struct archinfo *arch;
+		void *arch_data;
+
+		/*
+		 * This is a cheap hack.  kexec on some arches doesn't
+		 * properly add the vaddr.  There is an arch hack
+		 * for those, so look it up.
+		 */
+		arch = find_arch(elfc_getmachine(velf));
+		if (!arch) {
+			fprintf(stderr, "Unknown ELF machine in input"
+				" file: %d\n", elfc_getmachine(velf));
+			return -1;
+		}
+
+		if (arch->setup_arch_pelf) {
+			rv = arch->setup_arch_pelf(velf, NULL,
+						   &arch_data);
+			if (rv == -1)
+				return -1;
+		}
+
+		rv = -1;
+		if (arch->vmem_to_pmem)
+			rv = arch->vmem_to_pmem(velf, virt_pgdir,
+						&phys_pgdir, arch_data);
+
+		arch->cleanup_arch_data(arch_data);
+
+		if (rv == -1) {
+			fprintf(stderr, "Error getting swapper_pg_dir "
+				"phys addr: %s\n",
+				strerror(err));
+			return -1;
+		}
+	}
+	sprintf(buf, "ADDRESS(phys_pgd_ptr)=%llx\n",
+		(unsigned long long) phys_pgdir);
+	rv = elfc_add_note(elf, 0, "VMCOREINFO", 12,
+			   buf, strlen(buf) + 1);
+	if (rv == -1) {
+		fprintf(stderr, "Error adding phys_pgd_ptr note: %s\n",
+			strerror(elfc_get_errno(elf)));
+		return -1;
+	}
+
+	return 0;
+}
+
 struct elfc *
 read_oldmem(char *oldmem, char *vmcore)
 {
@@ -332,6 +450,7 @@ read_oldmem(char *oldmem, char *vmcore)
 	};
 	int page_size;
 	int memr;
+	struct memrange_info mr;
 
 	list_init(&mems);
 
@@ -364,18 +483,8 @@ read_oldmem(char *oldmem, char *vmcore)
 			page_size);
 	}
 
-	rv = find_vmcore_entries(velf, "MEMRANGE(sysram)",
-				 memrange_handler, NULL);
-	if (rv) {
-		fprintf(stderr,
-			"Error: Unable to scan memrange entries.\n");
-		goto out_err;
-	}
-	if (memrange == &init_memrange) {
-		fprintf(stderr,
-			"Warning: No memrange entries from old nernel.\n"
-			"  Will try to scan all of memory.\n");
-	}	
+	memset(&mr, 0, sizeof(mr));
+	rv = get_memranges(&mr, velf);
 
 	elf = elfc_alloc();
 	if (!elf) {
@@ -399,32 +508,14 @@ read_oldmem(char *oldmem, char *vmcore)
 
 	if (!vmci[2].found) {
 		/* Add phys_pgd_ptr to the notes if it doesn't already exist */
-		GElf_Addr virt_pgdir;
-		GElf_Addr phys_pgdir;
-		char buf[128];
-
 		if (!vmci[1].found) {
 			fprintf(stderr,
 				"Error: swapper_pg_dir not in vmcore\n");
 			goto out_err;
 		}
-		virt_pgdir = vmci[1].val;
-		rv = elfc_vmem_to_pmem(velf, virt_pgdir, &phys_pgdir);
-		if (rv == -1) {
-			fprintf(stderr, "Error getting swapper_pg_dir phys"
-				" addr: %s\n",
-				strerror(elfc_get_errno(elf)));
+		rv = add_phys_pgd_ptr(elf, velf, vmci[1].val);
+		if (rv == -1)
 			goto out_err;
-		}
-		sprintf(buf, "ADDRESS(phys_pgd_ptr)=%llx\n",
-			(unsigned long long) phys_pgdir);
-		rv = elfc_add_note(elf, 0, "VMCOREINFO", 12,
-				   buf, strlen(buf) + 1);
-		if (rv == -1) {
-			fprintf(stderr, "Error adding phys_pgd_ptr note: %s\n",
-				strerror(elfc_get_errno(elf)));
-			goto out_err;
-		}
 	}
 	
 	elfc_free(velf);
@@ -446,9 +537,10 @@ read_oldmem(char *oldmem, char *vmcore)
 		goto out_err;
 	}
 
-	for (memr = 0; memr < num_memrange; memr++) {
+	for (memr = 0; memr < mr.num_memrange; memr++) {
 		rv = scan_memrange(mfd,
-				   memrange[memr].start, memrange[memr].size,
+				   mr.memrange[memr].start,
+				   mr.memrange[memr].size,
 				   buf, page_size, oldmem, &mems);
 		if (rv == -1)
 			goto out_err;

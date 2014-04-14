@@ -92,15 +92,6 @@ int handle_vminfo_notes(struct elfc *elf, struct vmcoreinfo_data *vals);
 	[VMCI_OFFSET_ ## str ## __ ## elem] = { "OFFSET(" #str "." #elem ")", \
 	 10, 0, 0 }
 
-/*
- * Search for, and call handler on, every instance of the given entry
- * name in the vmcoreinfo note.
- */
-int find_vmcore_entries(struct elfc *elf, const char *entry,
-			int (*handler)(const char *name, const char *str,
-				       int strlen, void *userdata),
-			void *userdata);
-
 #define divide_round_up(x, y) (((x) + ((y) - 1)) / (y))
 
 typedef int (*handle_page_f)(struct elfc *pelf,
@@ -134,6 +125,8 @@ struct archinfo {
 			       void *arch_data,
 			       handle_page_f handle_page,
 			       void *userdata);
+	int (*vmem_to_pmem)(struct elfc *elf, GElf_Addr vaddr,
+			    GElf_Addr *paddr, void *arch_data);
 };
 struct archinfo *find_arch(int elfmachine);
 void add_arch(struct archinfo *arch);
@@ -168,9 +161,6 @@ struct kdt_data {
 	unsigned int ptrsize;
 
 	enum dump_levels level;
-
-	GElf_Addr crashkernel_start;
-	GElf_Addr crashkernel_end;
 
 	uint64_t (*conv64)(void *in);
 	uint32_t (*conv32)(void *in);
@@ -245,7 +235,6 @@ struct kdt_data {
 	uint64_t skipped_cache;
 	uint64_t skipped_user;
 	uint64_t skipped_poison;
-	uint64_t skipped_crashkernel;
 	uint64_t not_skipped;
 };
 

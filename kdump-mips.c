@@ -56,6 +56,7 @@
  * last.
  */
 enum vmcoreinfo_labels {
+	VMCI_SIZE_list_head,
 	VMCI_ADDRESS__text,
 	VMCI_ADDRESS__end,
 	VMCI_ADDRESS__phys_to_kernel_offset,
@@ -559,6 +560,7 @@ mips_arch_setup(struct elfc *pelf, struct kdt_data *d, void **arch_data)
 {
 	struct mips_walk_data *mwd;
 	struct vmcoreinfo_data vmci[VMCI_NUM_ELEMENTS + 1] = {
+		VMCI_SIZE(list_head),
 		VMCI_ADDRESS(_text),
 		VMCI_ADDRESS(_end),
 		VMCI_ADDRESS(_phys_to_kernel_offset),
@@ -601,7 +603,21 @@ mips_arch_setup(struct elfc *pelf, struct kdt_data *d, void **arch_data)
 	mwd->pfn_shift = vmci[VMCI_NUMBER__PFN_SHIFT].val;
 	mwd->_PAGE_HUGE = vmci[VMCI_NUMBER__PAGE_HUGE].val;/* Zero if not set */
 	mwd->PAGE_OFFSET = vmci[VMCI_ADDRESS_PAGE_OFFSET].val;
-	mwd->is_64bit = d->is_64bit;
+
+	/*
+	 * Don't get this from kdt_data, we may be called without
+	 * kdt_data in the case that a lookup is being done on a virtual
+	 * address and it fails.
+	 */
+	if (vmci[VMCI_SIZE_list_head].val == 8) {
+		mwd->is_64bit = false;
+	} else if (vmci[VMCI_SIZE_list_head].val == 16) {
+		mwd->is_64bit = true;
+	} else {
+		fprintf(stderr, "Error: list_head size not valid: %llu\n",
+			(unsigned long long) vmci[VMCI_SIZE_list_head].val);
+		return -1;
+	}
 
 	mwd->pmd_present = vmci[VMCI_NUMBER_PMD_ORDER].found;
 	mwd->pmd_order = vmci[VMCI_NUMBER_PMD_ORDER].val;
@@ -692,14 +708,13 @@ mips_arch_setup(struct elfc *pelf, struct kdt_data *d, void **arch_data)
 		mwd->PHYS_OFFSET = vmci[VMCI_ADDRESS_PHYS_OFFSET].val;
 	}
 
-	*arch_data = mwd;
-
-
 	if ((mwd->_PAGE_HUGE) && (d->page_size == 65536))
 		d->section_size_bits = 29;
 	else
 		d->section_size_bits = 28;
 	d->max_physmem_bits = 38;
+
+	*arch_data = mwd;
 
 	return 0;
 }
@@ -728,6 +743,25 @@ mips_walk(struct elfc *pelf, GElf_Addr pgd,
 	return rv;
 }
 
+/*
+ * kexec doesn't add the virtual address to the PHDRs, at least for
+ * MIPS64.  So we have to hack something.
+ */
+static int 
+mips_vmem_to_pmem(struct elfc *elf, GElf_Addr vaddr, GElf_Addr *paddr,
+		  void *arch_data)
+{
+	const struct mips_walk_data *mwd = arch_data;
+
+	if (!mwd->is_64bit)
+		return -1;
+	if ((vaddr >= mwd->CKSEG0) && (vaddr < mwd->CKSEG0 + 0x20000000)) {
+		*paddr = vaddr - mwd->CKSEG0;
+		return 0;
+	}
+	return -1;
+}
+
 struct archinfo mips_arch = {
 	.name = "mips",
 	.elfmachine = EM_MIPS,
@@ -735,4 +769,5 @@ struct archinfo mips_arch = {
 	.setup_arch_pelf = mips_arch_setup,
 	.cleanup_arch_data = mips_arch_cleanup,
 	.walk_page_table = mips_walk,
+	.vmem_to_pmem = mips_vmem_to_pmem
 };

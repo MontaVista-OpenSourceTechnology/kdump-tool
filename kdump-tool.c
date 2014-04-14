@@ -289,34 +289,6 @@ struct vmcore_finder_data {
 };
 
 static int
-vmcoreinfo_finder(const char *name, int namelen,
-		  const char *val, int vallen,
-		  void *userdata)
-{
-	struct vmcore_finder_data *d = userdata;
-
-	if ((d->namelen == namelen) &&
-	    (strncmp(name, d->name, namelen) == 0))
-		return d->handler(d->name, val, vallen, d->userdata);
-	return 0;
-}
-
-int
-find_vmcore_entries(struct elfc *elf, const char *entry,
-		    int (*handler)(const char *name, const char *str,
-				   int strlen, void *userdata),
-		    void *userdata)
-{
-	struct vmcore_finder_data data;
-
-	data.handler = handler;
-	data.userdata = userdata;
-	data.name = entry;
-	data.namelen = strlen(entry);
-	return scan_for_vminfo_notes(elf, vmcoreinfo_finder, &data);
-}
-
-static int
 vmcoreinfo_scanner(const char *nameptr, int namelen,
 		   const char *valptr, int vallen,
 		   void *userdata)
@@ -1063,20 +1035,6 @@ out_err:
 	return rv;
 }
 
-static int crashkernel_memrange_handler(const char *name, const char *str,
-					int strlen, void *userdata)
-{
-	struct kdt_data *d = userdata;
-	uint64_t start, size;
-
-	if (parse_memrange(str, &start, &size) == -1)
-		return 0;
-
-	d->crashkernel_start = start;
-	d->crashkernel_end = start + size;
-	return 0;
-}
-
 static int
 read_page_maps(struct kdt_data *d)
 {
@@ -1126,14 +1084,6 @@ read_page_maps(struct kdt_data *d)
 	list_init(&d->page_maps);
 
 	handle_vminfo_notes(d->elf, vmci);
-
-	rv = find_vmcore_entries(d->elf, "MEMRANGE(crashkernel)",
-				 crashkernel_memrange_handler, d);
-	if (rv) {
-		fprintf(stderr,
-			"Error: Unable to scan crash memrange entries.\n");
-		return -1;
-	}
 
 	_VMCI_CHECK_FOUND(vmci, PAGESIZE);
 	d->page_size = vmci[VMCI_PAGESIZE].val;
@@ -1428,17 +1378,6 @@ process_page(struct velf_data *dpage,
 		return 0;
 	}
 
-	if (d->level != DUMP_ALL &&
-	    (paddr >= d->crashkernel_start) && (paddr < d->crashkernel_end)) {
-		/*
-		 * Skip crashkernel data, that's where the kernel that
-		 * takes the crash dump runs, so it's memory is fairly
-		 * useless for analysis.
-		 */
-		d->skipped_crashkernel++;
-		return 0;
-	}
-
 	rv = find_page_by_pfn(d, range, pfn, &page);
 	if (rv == -1) {
 		dpr("Page not present, paddr %llx vaddr %llx\n",
@@ -1547,8 +1486,6 @@ print_skipped(struct kdt_data *d)
 	       (unsigned long long) d->skipped_user);
 	printf("        %llu poison pages\n",
 	       (unsigned long long) d->skipped_poison);
-	printf("        %llu pages in crashkernel\n",
-	       (unsigned long long) d->skipped_crashkernel);
 	printf("Accepted %llu pages\n",
 	       (unsigned long long) d->not_skipped);
 }
@@ -1746,7 +1683,9 @@ topelf(int argc, char *argv[])
 	if (rv == -1)
 		goto out_err;
 
-	print_skipped(d);
+	if (ofd != 1)
+		/* Don't print stuff if the elf file goes to stdout */
+		print_skipped(d);
 
 	rv = elfc_write(velf);
 	if (rv == -1) {
@@ -2011,7 +1950,9 @@ nopgd:
 	if (rv == -1)
 		goto out_err;
 
-	print_skipped(d);
+	if (ofd != 1)
+		/* Don't print stuff if the elf file goes to stdout */
+		print_skipped(d);
 
 	rv = elfc_write(velf);
 	if (rv == -1) {
