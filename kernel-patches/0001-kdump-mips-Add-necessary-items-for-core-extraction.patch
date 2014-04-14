@@ -1,14 +1,7 @@
-From 4ff2eb31037afd4d5143952ae313085ffefbb707 Mon Sep 17 00:00:00 2001
+From 654a604d3e6973e764ceace08881276da7ca2b56 Mon Sep 17 00:00:00 2001
 From: Corey Minyard <cminyard@mvista.com>
 Date: Sat, 1 Feb 2014 01:10:28 -0600
-Subject: [PATCH 2/2] kdump mips: Add necessary items for core extraction
-
-Source: Cavium Networks, Inc
-MR: 5283
-Type: Enhancement
-Disposition: Needs submitting to k.org
-ChangeID: 5f42965dcc5034f8ba678ccec39a43a990e6662e
-Description:
+Subject: [PATCH] kdump mips: Add necessary items for core extraction
 
 MIPS is quite complicated dealing with pages, there are lots of options
 and lots of values that are dynamically calculated.  We need to pass those
@@ -17,10 +10,11 @@ in so a vmcore file can be properly generated from a kdump.
 Signed-off-by: Corey Minyard <cminyard@mvista.com>
 ---
  arch/mips/kernel/machine_kexec.c | 30 ++++++++++++++++++++++++++++++
- 1 file changed, 30 insertions(+)
+ include/linux/kexec.h            |  3 +++
+ 2 files changed, 33 insertions(+)
 
 diff --git a/arch/mips/kernel/machine_kexec.c b/arch/mips/kernel/machine_kexec.c
-index 992e184..e3dc83f 100644
+index 992e184..0fbe13d 100644
 --- a/arch/mips/kernel/machine_kexec.c
 +++ b/arch/mips/kernel/machine_kexec.c
 @@ -12,6 +12,7 @@
@@ -31,7 +25,7 @@ index 992e184..e3dc83f 100644
  
  extern const unsigned char relocate_new_kernel[];
  extern const size_t relocate_new_kernel_size;
-@@ -108,4 +109,32 @@ machine_kexec(struct kimage *image)
+@@ -108,3 +109,32 @@ machine_kexec(struct kimage *image)
  #endif
  	((noretfun_t) reboot_code_buffer)();
  }
@@ -64,6 +58,20 @@ index 992e184..e3dc83f 100644
 +	VMCOREINFO_ADDRESS(IO_BASE);
 +	VMCOREINFO_NUMBER(_PFN_SHIFT);
 +}
+diff --git a/include/linux/kexec.h b/include/linux/kexec.h
+index a756419..e1267a4 100644
+--- a/include/linux/kexec.h
++++ b/include/linux/kexec.h
+@@ -161,6 +161,9 @@ unsigned long paddr_vmcoreinfo_note(void);
+ 	vmcoreinfo_append_str("NUMBER(%s)=%ld\n", #name, (long)name)
+ #define VMCOREINFO_CONFIG(name) \
+ 	vmcoreinfo_append_str("CONFIG_%s=y\n", #name)
++#define VMCOREINFO_ADDRESS(name) \
++	vmcoreinfo_append_str("ADDRESS(%s)=%llx\n", #name, \
++			      (unsigned long long) name)
+ 
+ extern struct kimage *kexec_image;
+ extern struct kimage *kexec_crash_image;
 -- 
 1.8.3.1
 
