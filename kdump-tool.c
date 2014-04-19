@@ -2302,6 +2302,7 @@ main(int argc, char *argv[])
 	add_arch(&i386_arch);
 	add_arch(&mips_arch);
 	add_arch(&arm_arch);
+	add_arch(&ppc32_arch);
 
 	for (i = 0; subcommands[i].name; i++) {
 		if (strcmp(subcommands[i].name, argv[optind]) == 0)

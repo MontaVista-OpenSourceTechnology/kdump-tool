@@ -1,0 +1,40 @@
+From 924f17ee725c28587e0c4ecd96515c09b3a1e00c Mon Sep 17 00:00:00 2001
+From: Nikita Yushchenko <nyushchenko@dev.rtsoft.ru>
+Date: Sat, 19 Apr 2014 07:32:05 -0400
+Subject: [PATCH] kdump ppc32: Add necessary items for core extraction
+
+This patch adds export of several MMU-related values in vmcore's notes.
+These values are needed to restore virtual-to-physical translation maps.
+
+Signed-off-by: Nikita Yushchenko <nyoushchenko@dev.rtsoft.ru>
+---
+ arch/powerpc/kernel/machine_kexec.c |   11 +++++++++++
+ 1 files changed, 11 insertions(+), 0 deletions(-)
+
+diff --git a/arch/powerpc/kernel/machine_kexec.c b/arch/powerpc/kernel/machine_kexec.c
+index 382d6b8..02ba668 100644
+--- a/arch/powerpc/kernel/machine_kexec.c
++++ b/arch/powerpc/kernel/machine_kexec.c
+@@ -67,7 +67,18 @@ void machine_kexec_cleanup(struct kimage *image)
+ 
+ void arch_crash_save_vmcoreinfo(void)
+ {
+-
++#ifndef CONFIG_PPC64
++	extern phys_addr_t total_lowmem;
++
++	VMCOREINFO_ADDRESS(PAGE_OFFSET);
++	VMCOREINFO_ADDRESS(MEMORY_START);
++	VMCOREINFO_NUMBER(total_lowmem);
++	VMCOREINFO_NUMBER(_PAGE_PRESENT);
++	VMCOREINFO_NUMBER(PTE_RPN_SHIFT);
++#ifdef CONFIG_PTE_64BIT
++	VMCOREINFO_CONFIG(PTE_64BIT);
++#endif
++#endif
+ #ifdef CONFIG_NEED_MULTIPLE_NODES
+ 	VMCOREINFO_SYMBOL(node_data);
+ 	VMCOREINFO_LENGTH(node_data, MAX_NUMNODES);
+-- 
+1.7.0.1
+

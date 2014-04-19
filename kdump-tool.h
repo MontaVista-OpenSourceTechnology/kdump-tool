@@ -95,6 +95,8 @@ int handle_vminfo_notes(struct elfc *elf, struct vmcoreinfo_data *vals);
 #define VMCI_OFFSET(str, elem)						\
 	[VMCI_OFFSET_ ## str ## __ ## elem] = { "OFFSET(" #str "." #elem ")", \
 	 10, 0, 0 }
+#define VMCI_CONFIG(lbl)						\
+	[VMCI_CONFIG_ ## lbl] = { "CONFIG_" #lbl, VMINFO_YN_BASE, 0, 0 }
 
 #define divide_round_up(x, y) (((x) + ((y) - 1)) / (y))
 
@@ -246,5 +248,6 @@ extern struct archinfo x86_64_arch;
 extern struct archinfo i386_arch;
 extern struct archinfo mips_arch;
 extern struct archinfo arm_arch;
+extern struct archinfo ppc32_arch;
 
 #endif /* KDUMPTOOL_H */
