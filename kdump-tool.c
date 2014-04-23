@@ -746,6 +746,9 @@ process_free_list(struct kdt_data *d, unsigned int order, unsigned char *list)
 	if (rv == -1)
 		return -1;
 
+	if (head_next == 0)
+		return 0;
+
 	next = head_next;
 	for (;;) {
 		GElf_Addr page_offset = next - d->page_lru_offset;
