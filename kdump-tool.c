@@ -1491,14 +1491,11 @@ process_page(struct velf_data *dpage,
 }
 
 static int
-velf_cleanup(struct elfc *pelf, struct velf_data *dpage, bool use_vaddr)
+flush_dpage(struct elfc *pelf, struct velf_data *dpage)
 {
 	int rv;
 
-	if ((use_vaddr &&
-	     ((dpage->next_vaddr - dpage->last_pgsize) != dpage->start_vaddr))
-	    || ((dpage->next_paddr - dpage->last_pgsize) != dpage->start_paddr))
-	{
+	if (dpage->prev_present) {
 		rv = gen_new_phdr(pelf, dpage);
 		if (rv)
 			return -1;
@@ -1712,7 +1709,7 @@ topelf(int argc, char *argv[])
 		}
 	}
 
-	rv = velf_cleanup(d->elf, &dpage, false);
+	rv = flush_dpage(d->elf, &dpage);
 	if (rv == -1)
 		goto out_err;
 
@@ -1979,7 +1976,7 @@ nopgd:
 	if (rv == -1)
 		goto out_err;
 
-	rv = velf_cleanup(d->elf, &dpage, true);
+	rv = flush_dpage(d->elf, &dpage);
 	if (rv == -1)
 		goto out_err;
 
