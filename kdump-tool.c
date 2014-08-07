@@ -229,20 +229,33 @@ handle_vmcoreinfo(const char *data, size_t len,
 				eqsign = next_off;
 			next_off++;
 		}
+		if (eqsign == -1)
+			return -1;
 		/*
 		 * This is to ensure that the strtoull() will not go
 		 * past the end of the data.  Require that the string
 		 * end in \n or \0.
 		 */
-		if (next_off >= len)
-			return -1;
-		if (eqsign == -1)
-			return -1;
-		if (*(data + next_off) != '\0')
-			next_off++;
-		handler(data + off, eqsign - off,
-			data + eqsign + 1, next_off - eqsign + 1,
-			userdata);
+		if (next_off >= len) {
+			size_t neqsign = eqsign - off;
+			size_t nlen = next_off - off + 1;
+			char *ndata = malloc(nlen);
+			if (!ndata) {
+				fprintf(stderr, "Out of memory\n");
+				return -1;
+			}
+			memcpy(ndata, data + off, nlen);
+			ndata[nlen] = '\0';
+			handler(ndata, neqsign,
+				ndata + neqsign + 1, nlen - eqsign - 1,
+				userdata);
+		} else {
+			if (*(data + next_off) != '\0')
+				next_off++;
+			handler(data + off, eqsign - off,
+				data + eqsign + 1, next_off - eqsign - 1,
+				userdata);
+		}
 		off = next_off;
 	}
 	return 0;
