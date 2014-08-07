@@ -1140,7 +1140,8 @@ read_page_maps(struct kdt_data *d)
 		return -1;
 	}
 
-	VMCI_CHECK_FOUND(vmci, NUMBER, PAGE_BUDDY_MAPCOUNT_VALUE);
+	if (vmci[VMCI_NUMBER_PAGE_BUDDY_MAPCOUNT_VALUE].found)
+		d->buddy_mapcount_found = 1;
 	d->buddy_mapcount = vmci[VMCI_NUMBER_PAGE_BUDDY_MAPCOUNT_VALUE].val;
 	VMCI_CHECK_FOUND(vmci, NUMBER, NR_FREE_PAGES);
 	d->NR_FREE_PAGES = vmci[VMCI_NUMBER_NR_FREE_PAGES].val;
@@ -1439,7 +1440,7 @@ process_page(struct velf_data *dpage,
 		return 0;
 	}
 
-	if (d->level != DUMP_ALL) {
+	if (d->level != DUMP_ALL && d->buddy_mapcount_found) {
 		if (!(page.flags & d->PG_slab)
 		    && (page.mapcount == d->buddy_mapcount))
 		{

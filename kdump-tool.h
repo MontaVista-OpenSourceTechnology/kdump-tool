@@ -220,6 +220,7 @@ struct kdt_data {
 	/* Other */
 	unsigned int pages_per_section;
 
+	int buddy_mapcount_found;
 	unsigned int buddy_mapcount;
 	uint64_t NR_FREE_PAGES; 
 
