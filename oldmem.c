@@ -397,8 +397,10 @@ add_phys_pgd_ptr(struct elfc *elf, struct elfc *velf, GElf_Addr virt_pgdir)
 		}
 
 		if (arch->setup_arch_pelf) {
-			rv = arch->setup_arch_pelf(velf, NULL,
-						   &arch_data);
+			struct kdt_data d;
+
+			memset(&d, 0, sizeof(d));
+			rv = arch->setup_arch_pelf(velf, &d, &arch_data);
 			if (rv == -1)
 				return -1;
 		}
