@@ -237,7 +237,7 @@ ppc32_arch_setup(struct elfc *pelf, struct kdt_data *d, void **arch_data)
 		fprintf(stderr, "%s value %llu is not expected - "
 				"is input file 32-bit?\n",
 			vmci[VMCI_SIZE_list_head].name,
-			vmci[VMCI_SIZE_list_head].val);
+			(unsigned long long) vmci[VMCI_SIZE_list_head].val);
 		goto err;
 	}
 
@@ -280,7 +280,7 @@ ppc32_arch_setup(struct elfc *pelf, struct kdt_data *d, void **arch_data)
 	    (md->pte_present_mask & (md->pte_present_mask - 1)) != 0) {
 		fprintf(stderr, "%s value %llu is not valid\n",
 			vmci[VMCI_NUMBER__PAGE_PRESENT].name,
-			vmci[VMCI_NUMBER__PAGE_PRESENT].val);
+			(unsigned long long) vmci[VMCI_NUMBER__PAGE_PRESENT].val);
 		goto err;
 
 	}
@@ -290,7 +290,7 @@ ppc32_arch_setup(struct elfc *pelf, struct kdt_data *d, void **arch_data)
 	    md->pte_rpn_shift > (md->pte_is_64bit ? 63 : 31)) {
 		fprintf(stderr, "%s value %llu is out of range\n",
 			vmci[VMCI_NUMBER_PTE_RPN_SHIFT].name,
-			vmci[VMCI_NUMBER_PTE_RPN_SHIFT].val);
+			(unsigned long long) vmci[VMCI_NUMBER_PTE_RPN_SHIFT].val);
 		goto err;
 	}
 
