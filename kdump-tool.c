@@ -249,6 +249,7 @@ handle_vmcoreinfo(const char *data, size_t len,
 			handler(ndata, neqsign,
 				ndata + neqsign + 1, nlen - eqsign - 1,
 				userdata);
+			free(ndata);
 		} else {
 			if (*(data + next_off) != '\0')
 				next_off++;
