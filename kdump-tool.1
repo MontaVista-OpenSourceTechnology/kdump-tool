@@ -33,6 +33,15 @@ kdump-tool \- Kdump dump handling tool
 [\-\-is_physical|-p]
 <address> <size>
 
+.B kdump-tool
+[\-\-help] virttophys [\--help]
+[\-\-infile|\-i <oldmem or pelf>]
+[\-\-vmcore|-v <vmcore>]
+[\-\-intype|-I oldmem|pelf]
+[\-\-physpgd|-P <pgd phys address>]
+[\-\-debug|-d]
+<address>
+
 .SH DESCRIPTION
 The
 .BR kdump-tool
@@ -79,6 +88,11 @@ will also dump ranges of memory from the various input types it
 supports using the dumpmem operation.  The parameters all work as
 before, with the addition of -p, which specifies the address as
 physical.  Otherwise the address is assumed to be virtual.
+
+.BR kdump-tool
+can also convert logical addresses to physical addresses using the
+.BR virttophys
+subcommand.  This only works on physical memory files.
 
 .SH OPTIONS
 .TP

@@ -1769,6 +1769,10 @@ velf_page_handler(struct elfc *pelf,
 	struct kdt_data *d = dpage->d;
 	unsigned int i, pages = divide_round_up(pgsize, d->page_size);
 
+	printf("Outputing vaddr %llx-%llx to phys start %llx\n",
+	       (unsigned long long) vaddr,
+	       (unsigned long long) vaddr + pgsize,
+	       (unsigned long long) paddr);
 	for (i = 0; i < pages; i++) {
 		rv = process_page(dpage, pelf, paddr, vaddr, d->page_size);
 		if (rv == -1)
@@ -1935,12 +1939,11 @@ tovelf(int argc, char *argv[])
 	if (!pgd_set) {
 		if (vmci[VMCI_ADDRESS_phys_pgd_ptr].found)
 			d->pgd = vmci[VMCI_ADDRESS_phys_pgd_ptr].val;
-		else
-			goto nopgd;
-	} else {
-nopgd:
-		fprintf(stderr, "pgd not given and not in input file.\n");
-		goto out_err;
+		else {
+			fprintf(stderr,
+				"pgd not given and not in input file.\n");
+			goto out_err;
+		}
 	}
 
 	if (outfile) {
@@ -2222,6 +2225,196 @@ out_err:
 	goto out;
 }
 
+static int
+virttophys_page_handler(struct elfc *pelf,
+			GElf_Addr paddr,
+			GElf_Addr vaddr,
+			GElf_Addr pgsize,
+			void *userdata)
+{
+	struct velf_data *dpage = userdata;
+
+	if ((dpage->start_vaddr >= vaddr) &&
+	    (dpage->start_vaddr < vaddr + pgsize)) {
+		printf("%llx\n", ((unsigned long long)
+				  paddr + (vaddr - dpage->start_vaddr)));
+	}
+	return 0;
+}
+
+static int
+virttophys(int argc, char *argv[])
+{
+	char *infile = NULL;
+	char *vmcore = "/proc/vmcore";
+	static const struct option longopts[] = {
+		{ "help",	no_argument,		NULL, 'h' },
+		{ "infile",	required_argument,	NULL, 'i' },
+		{ "vmcore",	required_argument,	NULL, 'v' },
+		{ "intype",	required_argument,	NULL, 'I' },
+		{ "physpgd",	required_argument,	NULL, 'P' },
+		{ NULL }
+	};
+	static const char *helpstr[] = {
+		"This info",
+		"The input file, defaults to /dev/mem if intype is oldmem, "
+			"otherwise required",
+		"File send output to, stdout if not specified",
+		"The vmcore file, defaults to /proc/vmcore, only for oldmem",
+		"The file type, either pelf or oldmem, defaults to pelf",
+		"The physical address of the kernel page descriptor",
+		"<addr> - The address to convert",
+		NULL
+	};
+	int fd = -1;
+	int rv = 0;
+	struct kdt_data kdt_data, *d = &kdt_data;
+	int pgd_set = 0;
+	struct vmcoreinfo_data vmci[] = {
+		VMCI_ADDRESS(phys_pgd_ptr),
+		VMCI_SIZE(list_head),
+		VMCI_OFFSET(list_head, next),
+		VMCI_OFFSET(list_head, prev),
+		{ NULL }
+	};
+	int do_oldmem = 0;
+	struct velf_data dpage;
+	GElf_Addr addr;
+	char *endc;
+
+	memset(d, 0, sizeof(*d));
+	for (;;) {
+		int curr_optind = optind;
+		int c = getopt_long(argc, argv, "+ho:i:v:I:P:c:l:d", longopts,
+				    NULL);
+		if (c == -1)
+			break;
+		switch (c) {
+		case 'i':
+			infile = optarg;
+			break;
+		case 'v':
+			vmcore = optarg;
+			break;
+		case 'I':
+			if (strcmp(optarg, "oldmem") == 0) {
+				do_oldmem = 1;
+			} else if (strcmp(optarg, "pelf") == 0) {
+				do_oldmem = 0;
+			} else {
+				subcmd_usage("Unknown input type: %s\n",
+					     optarg);
+			}
+			break;
+		case 'P': {
+			char *end;
+
+			d->pgd = strtoull(optarg, &end, 0);
+			if ((end == optarg) || (*end != '\0'))
+				subcmd_usage("Invalid pgd number: %s\n",
+					     optarg);
+			pgd_set = 1;
+			break;
+		}
+		case 'h':
+			subcmd_help("", longopts, helpstr);
+			return 0;
+		case '?':
+			subcmd_usage("Unknown option: %s\n", argv[curr_optind]);
+		}
+	}
+
+	if (optind >= argc) {
+		subcmd_usage("Address not given\n");
+		return 1;
+	}
+	addr = strtoull(argv[optind], &endc, 16);
+	if (*endc != '\0') {
+		subcmd_usage("Invalid address: %s\n", argv[optind]);
+		return 1;
+	}
+	optind++;
+
+	if (optind < argc) {
+		subcmd_usage("Too many arguments, starting at %s\n",
+			     argv[optind]);
+		goto out_err;
+	}
+
+	if (do_oldmem) {
+		if (!infile)
+			infile = DEFAULT_OLDMEM;
+		d->elf = read_oldmem(infile, vmcore);
+		if (!d->elf)
+			goto out_err;
+	} else {
+		if (!infile)
+			subcmd_usage("No input file specified\n");
+		fd = open(infile, O_RDONLY);
+		if (fd == -1) {
+			fprintf(stderr, "Unable to open %s: %s\n", infile,
+				strerror(errno));
+			goto out_err;
+		}
+		d->elf = elfc_alloc();
+		if (!d->elf) {
+			fprintf(stderr, "Out of memory allocating elf obj\n");
+			goto out_err;
+		}
+		rv = elfc_open(d->elf, fd);
+		if (rv) {
+			fprintf(stderr, "Unable to elfc open %s: %s\n", infile,
+				strerror(elfc_get_errno(d->elf)));
+			goto out_err;
+		}
+		fd = -1;
+	}
+
+	handle_vminfo_notes(d->elf, vmci);
+
+	if (!pgd_set) {
+		if (vmci[VMCI_ADDRESS_phys_pgd_ptr].found)
+			d->pgd = vmci[VMCI_ADDRESS_phys_pgd_ptr].val;
+		else {
+			fprintf(stderr,
+				"pgd not given and not in input file.\n");
+			goto out_err;
+		}
+	}
+
+	rv = process_base_vmci(d, vmci, d->elf);
+	if (rv)
+		goto out_err;
+
+	rv = read_page_maps(d);
+	if (rv == -1)
+		goto out_err;
+
+	memset(&dpage, 0, sizeof(dpage));
+	dpage.start_vaddr = addr;
+	dpage.d = d;
+	rv = d->arch->walk_page_table(d->elf, d->pgd, 0, ~((GElf_Addr) 0),
+				      d->arch_data, virttophys_page_handler,
+				      &dpage);
+	if (rv == -1)
+		goto out_err;
+
+out:
+	if (d->arch && d->arch_data)
+		d->arch->cleanup_arch_data(d->arch_data);
+	if (fd != -1)
+		close(fd);
+	if (d->elf) {
+		close(elfc_get_fd(d->elf));
+		elfc_free(d->elf);
+	}
+	return rv;
+
+out_err:
+	rv = 1;
+	goto out;
+}
+
 static struct list arches = LIST_INIT(arches);
 
 struct archinfo *
@@ -2253,6 +2446,8 @@ struct {
 	{ "tovelf", tovelf, "Convert /dev/mem or a pelf file to a "
 	  "virtual elf file" },
 	{ "dumpmem", dumpmem, "Dump raw memory in an elf or oldmem file" },
+	{ "virttophys", virttophys, "Convert a virtual address to a"
+	  "physical one" },
 	{ NULL }
 };
 
