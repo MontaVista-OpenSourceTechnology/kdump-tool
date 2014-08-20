@@ -409,7 +409,7 @@ handle_64pte(struct elfc *pelf, const struct mips_walk_data *mwd,
 
 		rv = handle_page(pelf,
 				 lpte >> mwd->pfn_shift << mwd->page_shift,
-				 vaddr | i << mwd->page_shift,
+				 vaddr | ((GElf_Addr) i) << mwd->page_shift,
 				 1 << mwd->page_shift, userdata);
 		if (rv == -1)
 			return -1;
@@ -452,7 +452,7 @@ handle_64pmd(struct elfc *pelf, const struct mips_walk_data *mwd,
 		    (lpmd & mwd->page_present_mask)) {
 			rv = handle_page(pelf,
 				 lpmd >> mwd->pfn_shift << mwd->page_shift,
-				 vaddr | i << mwd->pmd_shift,
+				 vaddr | ((GElf_Addr) i) << mwd->pmd_shift,
 				 1 << mwd->pmd_shift, userdata);
 			if (rv == -1)
 				return -1;
@@ -460,7 +460,8 @@ handle_64pmd(struct elfc *pelf, const struct mips_walk_data *mwd,
 		if (mips_virt_to_phys64(mwd, pmdaddr, i, lpmd, &lpmd) == -1)
 			continue;
 
-		rv = handle_64pte(pelf, mwd, vaddr | i << mwd->pmd_shift,
+		rv = handle_64pte(pelf, mwd,
+				  vaddr | ((GElf_Addr) i) << mwd->pmd_shift,
 				  lpmd, begin_addr, end_addr,
 				  handle_page, userdata);
 		if (rv == -1)
@@ -542,11 +543,13 @@ walk_mips64(struct elfc *pelf, const struct mips_walk_data *mwd,
 			continue;
 
 		if (mwd->pmd_present)
-			rv = handle_64pmd(pelf, mwd, i << mwd->pgd_shift,
+			rv = handle_64pmd(pelf, mwd,
+					  ((GElf_Addr) i) << mwd->pgd_shift,
 					  lpgd, begin_addr, end_addr,
 					  handle_page, userdata);
 		else
-			rv = handle_64pte(pelf, mwd, i << mwd->pgd_shift,
+			rv = handle_64pte(pelf, mwd,
+					  ((GElf_Addr) i) << mwd->pgd_shift,
 					  lpgd, begin_addr, end_addr,
 					  handle_page, userdata);
 		if (rv == -1)
@@ -733,6 +736,10 @@ mips_walk(struct elfc *pelf, GElf_Addr pgd,
 	const struct mips_walk_data *mwd = arch_data;
 	int rv;
 
+	printf("Walking using pgd %llx from %llx to %llx\n",
+	       (unsigned long long) pgd,
+	       (unsigned long long) begin_addr,
+	       (unsigned long long) end_addr);
 	if (mwd->is_64bit)
 		rv = walk_mips64(pelf, mwd, pgd, begin_addr, end_addr,
 				 handle_page, userdata);
