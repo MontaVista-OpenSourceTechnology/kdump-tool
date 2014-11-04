@@ -1769,10 +1769,6 @@ velf_page_handler(struct elfc *pelf,
 	struct kdt_data *d = dpage->d;
 	unsigned int i, pages = divide_round_up(pgsize, d->page_size);
 
-	printf("Outputing vaddr %llx-%llx to phys start %llx\n",
-	       (unsigned long long) vaddr,
-	       (unsigned long long) vaddr + pgsize,
-	       (unsigned long long) paddr);
 	for (i = 0; i < pages; i++) {
 		rv = process_page(dpage, pelf, paddr, vaddr, d->page_size);
 		if (rv == -1)
