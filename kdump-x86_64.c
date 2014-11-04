@@ -63,6 +63,15 @@
 
 #define KERNBASE		0xffff000000000000
 
+/*
+ * This section of memory is used for mapping a bunch of virtual
+ * pages to the same physical page for use by the 16-bit iret
+ * from the kernel.  It adds a boatload of sections and virtual
+ * memory with no value for a coredump.  Nuke these.
+ */
+#define ESP_STACK_FIXUPS_START  0xffffff0000000000
+#define ESP_STACK_FIXUPS_END    0xffffff7fffffffff
+
 static int
 handle_pte(struct elfc *pelf, GElf_Addr vaddr, GElf_Addr pteaddr,
 	   GElf_Addr begin_addr, GElf_Addr end_addr,
@@ -73,6 +82,10 @@ handle_pte(struct elfc *pelf, GElf_Addr vaddr, GElf_Addr pteaddr,
 	int rv;
 	uint64_t start = begin_addr >> PAGESHIFT_4K;
 	uint64_t end = end_addr >> PAGESHIFT_4K;
+
+        vaddr |= KERNBASE;
+        if (vaddr >= ESP_STACK_FIXUPS_START && vaddr <= ESP_STACK_FIXUPS_END)
+                return 0;
 
 	begin_addr &= PAGEMASK_4K;
 	end_addr &= PAGEMASK_4K;
@@ -96,7 +109,7 @@ handle_pte(struct elfc *pelf, GElf_Addr vaddr, GElf_Addr pteaddr,
 		/* 4K page */
 		rv = handle_page(pelf, 
 				 lpte & PHYSADDRMASK_4K,
-				 newvaddr | KERNBASE,
+				 newvaddr,
 				 PAGESIZE_4K, userdata);
 		if (rv == -1)
 			return -1;
