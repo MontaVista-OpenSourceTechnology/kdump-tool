@@ -280,6 +280,165 @@ int elfc_phdr_write(struct elfc *e, int pnum, GElf_Off off,
 int elfc_get_num_phdrs(struct elfc *e);
 
 /*
+ * Return the size of a single Elf Shdr for the file.
+ */
+GElf_Off elfc_shdr_size_one(struct elfc *e);
+
+/*
+ * Return the size of all the defines Elf Shdrs for the file.
+ */
+GElf_Off elfc_shdr_size(struct elfc *e);
+
+
+/*
+ * Add a Shdr to the shdr list for the ELF object.
+ * Returns -1 on error, use elfc_get_errno() to get the errno.
+ * Otherwise returns the index of the new shdr.  Note that these
+ * indexes can change with later processing (especially writing)
+ * so don't assume they stay the same if you have processed the
+ * object in other ways.
+ */
+int elfc_add_shdr(struct elfc *e,
+		  GElf_Word name, GElf_Word type, GElf_Xword flags,
+		  GElf_Addr addr, GElf_Off offset, GElf_Xword size,
+		  GElf_Word link, GElf_Word info, GElf_Xword addralign,
+		  GElf_Xword entsize);
+  
+/*
+ * Like elfc_add_shdr(), but inserts the shdr at the given pnum.
+ */
+int elfc_insert_shdr(struct elfc *e, int pnum,
+		     GElf_Word name, GElf_Word type, GElf_Xword flags,
+		     GElf_Addr addr, GElf_Off offset, GElf_Xword size,
+		     GElf_Word link, GElf_Word info, GElf_Xword addralign,
+		     GElf_Xword entsize);
+
+/*
+ * Delete the given Shdr from the file.  All the header numbers
+ * after it will be decremented by one.
+ * Returns -1 on error, use elfc_get_errno() to get the errno.
+ */
+int elfc_del_shdr(struct elfc *e, int pnum);
+
+/*
+ * Set the data handling for the shdr.  This lets you handle the
+ * processing of data as it goes out to be written.  You can pass
+ * in a data (which is assumed to be a pointer to the actual data)
+ * and userdata (which is assumed to be helper data).  Those are
+ * not required, though, you can use those for whatever you like.
+ * They will just be passed into the given function pointers.
+ *
+ * The free_func() is called whenever the shdr is destroyed,
+ * this is so you can free any data, close file descriptors, etc.
+ *
+ * The pre_write is called after the Shdrs are processed to find the
+ * offsets but before they are written.  The file will not be modified
+ * at this time.  This can be used to store off old data, modify the
+ * offsets, etc.  You can modify the shdrs at this point, since they
+ * are not written yet.
+ * 
+ * The do_write function should perform the output to the given fd.  The
+ * fd will be at the p_offset of the shdr, so you don't have to seek
+ * before writing.
+ *
+ * The post_write function is called after the processing is complete.
+ * If the pre_write function is called, the post_write function will
+ * be called, even if an error occurs.  This way you can clean things
+ * up reliably.
+ *
+ * The get_data function is called if something is trying to fetch
+ * data from the section.  The return results go in odata, so be careful
+ * about that, don't use "data".
+ *
+ * The set_data function is called if something is trying to write
+ * data to the section.  The output data comes from idata, so be careful
+ * about that.
+ *
+ * If these functions are NULL, they will not be called.  All these
+ * functions should return -1 on error, 0 on success, and set errno
+ * on an error.
+
+ * On the headers read in from a file, these functions are
+ * automatically set to functions that will save off the old data to a
+ * temporary file (pre write), and write the data back into the main
+ * file (for do write).
+ *
+ * elfc_shdr_block_do_write() and elfc_gen_shdr_free() are convenience
+ * functions that let you provide a block of data in "data" that is
+ * malloced.  That block will be written out.  The size of the block
+ * is set by shdr->p_filesz, and the free function will free it.
+ *
+ * Returns -1 on error, use elfc_get_errno() to get the errno.
+ */
+int elfc_set_shdr_data(struct elfc *e, int pnum, void *data,
+		       void (*free_func)(struct elfc *e, void *data,
+					 void *userdata),
+		       int (*pre_write)(struct elfc *e, GElf_Shdr *shdr,
+					void *data, void *userdata),
+		       int (*do_write)(struct elfc *e, int fd, GElf_Shdr *shdr,
+				       void *data, void *userdata),
+		       void (*post_write)(struct elfc *e, GElf_Shdr *shdr,
+					  void *data, void *userdata),
+		       int (*get_data)(struct elfc *e, GElf_Shdr *shdr,
+				       void *data,
+				       GElf_Off off, void *idata, size_t len,
+				       void *userdata),
+		       int (*set_data)(struct elfc *e, GElf_Shdr *shdr,
+				       void *data, GElf_Off off,
+				       const void *idata, size_t len,
+				       void *userdata),
+		       void *userdata);
+
+/*
+ * Convenience functions for elfc_set_shdr_data().  Pass in the free
+ * function for free_func and the do_write function for do_write.  See
+ * elfc_set_shdr_data() for more details on this.
+ *
+ * The free func will free data and userdata if not NULL.
+ */
+void elfc_gen_shdr_free(struct elfc *e, void *data, void *userdata);
+int elfc_shdr_block_do_write(struct elfc *e, int fd, GElf_Shdr *shdr,
+			     void *data, void *userdata);
+int elfc_shdr_block_get_data(struct elfc *e, GElf_Shdr *shdr, void *data,
+			     GElf_Off off, void *odata, size_t len,
+			     void *userdata);
+int elfc_shdr_block_set_data(struct elfc *e, GElf_Shdr *shdr, void *data,
+			     GElf_Off off, const void *idata, size_t len,
+			     void *userdata);
+
+/*
+ * Get a copy of an actual shdr. 
+ * Returns -1 on error, use elfc_get_errno() to get the errno.
+ */
+int elfc_get_shdr(struct elfc *e, int pnum, GElf_Shdr *hdr);
+
+/*
+ * Get/set the p_offset value for a shdr.
+ * Returns -1 on error, use elfc_get_errno() to get the errno.
+ */
+int elfc_get_shdr_offset(struct elfc *e, int pnum, GElf_Off *off);
+int elfc_set_shdr_offset(struct elfc *e, int pnum, GElf_Off offset);
+
+/*
+ * Read from the given offset in the program section pnum.
+ * Returns -1 on error, use elfc_get_errno() to get the errno.
+ */
+int elfc_shdr_read(struct elfc *e, int pnum, GElf_Off off,
+		   void *odata, size_t len);
+
+/*
+ * Write to the given offset in the program section pnum.
+ * Returns -1 on error, use elfc_get_errno() to get the errno.
+ */
+int elfc_shdr_write(struct elfc *e, int pnum, GElf_Off off,
+		    const void *odata, size_t len);
+  
+/*
+ * Return the number of shdrs in the ELF object.
+ */
+int elfc_get_num_shdrs(struct elfc *e);
+
+/*
  * Add an ELF note to the object.
  * Returns -1 on error, use elfc_get_errno() to get the errno.
  */
