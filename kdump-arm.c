@@ -158,7 +158,7 @@ arm_walk(struct elfc *pelf, GElf_Addr pgdaddr,
 			continue;
 		case 1:
 			rv = handle_pte(awd, ((GElf_Addr) i) << 20,
-					lpgd & ~0xff3,
+					lpgd & ~0x3ff,
 					begin_addr, end_addr,
 					handle_page, userdata);
 			if (rv == -1)
