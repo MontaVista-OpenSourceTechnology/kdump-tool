@@ -49,6 +49,8 @@ struct ppc32_walk_data {
 	uint32_t linear_size;
 
 	bool pte_is_64bit;
+	bool pgd_contains_vaddr;/* for BOOKE, pmd has virtual addresses,
+				   for others, pmd has physical addresses */
 
 	uint32_t pgd_area_size;	/* size of address space covered by
 				   one pgd entry */
@@ -130,16 +132,20 @@ ensure_pte_for(struct ppc32_walk_data *md, uint32_t vaddr, uint32_t lpgd)
 	if (md->pgd_area_vaddr == pgd_area_vaddr)
 		return true;
 
-	pte_page_vaddr = lpgd & md->pgd_addr_mask;
-	if (!linear_mapped_vaddr(md, pte_page_vaddr)) {
-		fprintf(stderr, "Unsupported: PTE table for address 0x%08x "
-				"is at virtual address 0x%08x which is "
-				"outside of linear mapped area\n",
-			vaddr, pte_page_vaddr);
-		return false;
-	}
+	if (md->pgd_contains_vaddr) {
+		pte_page_vaddr = lpgd & md->pgd_addr_mask;
+		if (!linear_mapped_vaddr(md, pte_page_vaddr)) {
+			fprintf(stderr, "Unsupported: PTE table for address "
+					"0x%08x is at virtual address 0x%08x "
+					"which is outside of linear mapped "
+					"area\n",
+				vaddr, pte_page_vaddr);
+			return false;
+		}
+		pte_page_paddr = linear_virt_to_phys(md, pte_page_vaddr);
+	} else
+		pte_page_paddr = lpgd & md->pgd_addr_mask;
 
-	pte_page_paddr = linear_virt_to_phys(md, pte_page_vaddr);
 	rv = elfc_read_pmem(md->pelf, pte_page_paddr, md->pte, md->pagesize);
 	if (rv == -1) {
 		fprintf(stderr, "Unable to read PTE table for address 0x%08x "
@@ -188,6 +194,7 @@ ppc32_arch_setup(struct elfc *pelf, struct kdt_data *d, void **arch_data)
 		VMCI_ADDRESS_MEMORY_START,
 		VMCI_NUMBER_total_lowmem,
 		VMCI_PAGESIZE,
+		VMCI_CONFIG_BOOKE,
 		VMCI_CONFIG_PTE_64BIT,
 		VMCI_NUMBER__PAGE_PRESENT,
 		VMCI_NUMBER_PTE_RPN_SHIFT,
@@ -199,6 +206,7 @@ ppc32_arch_setup(struct elfc *pelf, struct kdt_data *d, void **arch_data)
 		VMCI_ADDRESS(MEMORY_START),
 		VMCI_NUMBER(total_lowmem),
 		VMCI_PAGESIZE(),
+		VMCI_CONFIG(BOOKE),
 		VMCI_CONFIG(PTE_64BIT),
 		VMCI_NUMBER(_PAGE_PRESENT),
 		VMCI_NUMBER(PTE_RPN_SHIFT),
@@ -273,6 +281,7 @@ ppc32_arch_setup(struct elfc *pelf, struct kdt_data *d, void **arch_data)
 		goto err;
 	}
 
+	md->pgd_contains_vaddr = !!vmci[VMCI_CONFIG_BOOKE].val;
 	md->pte_is_64bit = !!vmci[VMCI_CONFIG_PTE_64BIT].val;
 
 	md->pte_present_mask = vmci[VMCI_NUMBER__PAGE_PRESENT].val;
@@ -387,7 +396,7 @@ ppc32_walk(struct elfc *pelf, GElf_Addr pgdaddr,
 		 * - one or more pgd entries are equal and point to single
 		 *   pte
 		 */
-		if ((lpgd & (1ul << 31)) == 0) {
+		if (md->pgd_contains_vaddr && (lpgd & (1ul << 31)) == 0) {
 
 			/* Huge page */
 

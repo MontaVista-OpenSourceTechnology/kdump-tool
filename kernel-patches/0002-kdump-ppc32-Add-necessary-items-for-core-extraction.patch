@@ -15,7 +15,7 @@ diff --git a/arch/powerpc/kernel/machine_kexec.c b/arch/powerpc/kernel/machine_k
 index 382d6b8..02ba668 100644
 --- a/arch/powerpc/kernel/machine_kexec.c
 +++ b/arch/powerpc/kernel/machine_kexec.c
-@@ -67,7 +67,18 @@ void machine_kexec_cleanup(struct kimage *image)
+@@ -67,7 +67,21 @@ void machine_kexec_cleanup(struct kimage *image)
  
  void arch_crash_save_vmcoreinfo(void)
  {
@@ -28,6 +28,9 @@ index 382d6b8..02ba668 100644
 +	VMCOREINFO_NUMBER(total_lowmem);
 +	VMCOREINFO_NUMBER(_PAGE_PRESENT);
 +	VMCOREINFO_NUMBER(PTE_RPN_SHIFT);
++#ifdef CONFIG_BOOKE
++	VMCOREINFO_CONFIG(BOOKE);
++#endif
 +#ifdef CONFIG_PTE_64BIT
 +	VMCOREINFO_CONFIG(PTE_64BIT);
 +#endif
