@@ -20,3 +20,22 @@ generate the gdb-usable core file.
 
 Then do "gdb vmlinux kcore".  For more information, see:
   http://www.elinux.org/Debugging_The_Linux_Kernel_Using_Gdb
+
+
+Relocatable Kernels
+-------------------
+
+Kernels that are relocatable cannot be debugged as-is by gdb, they
+require some changes.  kdump-tool adds an AT_ENTRY auxv entry to the
+core dump if an "entry" field is in the VMCOREINFO.  gdb can use this
+and compare with the entry field in the vmlinux elf header and
+relocate the core dump properly.
+
+However, gdb will only do that with dynamic executables.  So the
+program kdump-makedyn was added to convert an executable from fixed
+address to dynamic type to fool gdb.
+
+You will probably need kernel patches to add the entry field.  It
+should generally be the "ENTRY()" field in
+arch/<arch>/kernel/vmlinux.lds.S.  Kernel patches are in the
+kernel-patches directory with obvious file names.

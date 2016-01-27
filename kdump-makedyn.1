@@ -1,0 +1,40 @@
+.TH kdump-makedyn 1 01/26/16  "Kdump dump handling tool"
+
+.SH NAME
+kdump-makedyn \- Make a fixed executable dynamic for handling relocated kernels
+
+.SH SYNOPSIS
+.B kdump-makedyn
+[\-\-help]
+<executable1> [<executable2> [...]]
+
+
+.SH DESCRIPTION
+The
+.BR kdump-makedyn
+program changes the elf type of an executable from a fixed address
+executable (ET_EXEC) to a relocatable executable (ET_DYN).  This is
+so that gdb can load a relocatable kernel.
+
+Generally you would run this on the vmlinux file.  This fools gdb
+so it will read the relocated start address put in the auxv
+notes by
+.BR kdump-tool
+and use that for the relocation.  If the elf type is ET_EXEC, gdb
+will not try to do this.
+
+.SH OPTIONS
+.TP
+.I "\-\-help"
+Output help.
+
+.SH "SEE ALSO"
+kdump-tool(1)
+
+.SH "KNOWN PROBLEMS"
+It doesn't do a lot of checking on the file.  Running it on arbitrary
+executables could have bad side effects.
+
+.SH AUTHOR
+.PP
+Corey Minyard <minyard@acm.org>
