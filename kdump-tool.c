@@ -2013,6 +2013,12 @@ tovelf(int argc, char *argv[])
 	if (rv)
 		goto out_err;
 
+	if (elfclass == ELFCLASSNONE) {
+		elfc_setclass(velf, d->arch->default_elfclass);
+	} else {
+		elfc_setclass(velf, elfclass);
+	}
+
 	rv = add_auxv(velf, d);
 	if (rv)
 		goto out_err;
@@ -2020,12 +2026,6 @@ tovelf(int argc, char *argv[])
 	rv = read_page_maps(d);
 	if (rv == -1)
 		goto out_err;
-
-	if (elfclass == ELFCLASSNONE) {
-		elfc_setclass(velf, d->arch->default_elfclass);
-	} else {
-		elfc_setclass(velf, elfclass);
-	}
 
 	memset(&dpage, 0, sizeof(dpage));
 	dpage.velf = velf;
