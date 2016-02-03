@@ -736,10 +736,6 @@ mips_walk(struct elfc *pelf, GElf_Addr pgd,
 	const struct mips_walk_data *mwd = arch_data;
 	int rv;
 
-	printf("Walking using pgd %llx from %llx to %llx\n",
-	       (unsigned long long) pgd,
-	       (unsigned long long) begin_addr,
-	       (unsigned long long) end_addr);
 	if (mwd->is_64bit)
 		rv = walk_mips64(pelf, mwd, pgd, begin_addr, end_addr,
 				 handle_page, userdata);
