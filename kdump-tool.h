@@ -243,13 +243,6 @@ struct kdt_data {
 	uint64_t skipped_user;
 	uint64_t skipped_poison;
 	uint64_t not_skipped;
-
-	/*
-	 * Kernel entry point, used to create auxv section for
-	 * relocatable kernels.
-	 */
-	bool	 entry_present;
-	uint64_t entry;
 };
 
 extern struct archinfo x86_64_arch;

@@ -125,7 +125,6 @@ enum base_vmci {
 	VMCI_SIZE_list_head,
 	VMCI_OFFSET_list_head__next,
 	VMCI_OFFSET_list_head__prev,
-	VMCI_ADDRESS_entry,
 };
 
 #define _VMCI_CHECK_FOUND(vmci, fullname)				\
@@ -179,11 +178,6 @@ int process_base_vmci(struct kdt_data *d, struct vmcoreinfo_data *vmci,
 		rv = d->arch->setup_arch_pelf(elf, d, &d->arch_data);
 		if (rv == -1)
 			return -1;
-	}
-
-	if (vmci[VMCI_ADDRESS_entry].found) {
-		d->entry_present = true;
-		d->entry = vmci[VMCI_ADDRESS_entry].val;
 	}
 
 	return 0;
@@ -1233,39 +1227,6 @@ read_page_maps(struct kdt_data *d)
 		/* Flat Memory */
 		rv = read_flat_page_maps(d, vmci);
 	}
-
-	return rv;
-}
-
-static int
-add_auxv(struct elfc *e, struct kdt_data *d)
-{
-	int rv;
-        unsigned char elfclass;
-
-	if (!d->entry_present)
-		return 0;
-
-	elfclass = elfc_getclass(e);
-	if (elfclass == ELFCLASS32) {
-		Elf32_auxv_t auxv;
-
-		auxv.a_type = AT_ENTRY;
-		auxv.a_un.a_val = d->entry;
-		rv = elfc_add_note(e, NT_AUXV, "CORE", 5, &auxv, sizeof(auxv));
-	} else if (elfclass == ELFCLASS64) {
-		Elf64_auxv_t auxv;
-
-		auxv.a_type = AT_ENTRY;
-		auxv.a_un.a_val = d->entry;
-		rv = elfc_add_note(e, NT_AUXV, "CORE", 5, &auxv, sizeof(auxv));
-	} else {
-		rv = -EINVAL;
-	}
-	if (rv)
-		fprintf(stderr, "Unable to add AUXV core note: %s\n",
-			strerror(rv));
-
 	return rv;
 }
 
@@ -1607,7 +1568,6 @@ topelf(int argc, char *argv[])
 		VMCI_SIZE(list_head),
 		VMCI_OFFSET(list_head, next),
 		VMCI_OFFSET(list_head, prev),
-		VMCI_ADDRESS(entry),
 		{ NULL }
 	};
 	struct kdt_data kdt_data, *d = &kdt_data;
@@ -1861,7 +1821,6 @@ tovelf(int argc, char *argv[])
 		VMCI_SIZE(list_head),
 		VMCI_OFFSET(list_head, next),
 		VMCI_OFFSET(list_head, prev),
-		VMCI_ADDRESS(entry),
 		{ NULL }
 	};
 	int do_oldmem = 0;
@@ -2010,10 +1969,6 @@ tovelf(int argc, char *argv[])
 	elfc_set_fd(velf, ofd);
 
 	rv = process_base_vmci(d, vmci, d->elf);
-	if (rv)
-		goto out_err;
-
-	rv = add_auxv(velf, d);
 	if (rv)
 		goto out_err;
 
@@ -2316,7 +2271,6 @@ virttophys(int argc, char *argv[])
 		VMCI_SIZE(list_head),
 		VMCI_OFFSET(list_head, next),
 		VMCI_OFFSET(list_head, prev),
-		VMCI_ADDRESS(entry),
 		{ NULL }
 	};
 	int do_oldmem = 0;
