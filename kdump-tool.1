@@ -22,7 +22,17 @@ kdump-tool \- Kdump dump handling tool
 [\-\-physpgd|-P <pgd phys address>]
 [\-\-elfclass|-c 32|64]
 [\-\-level|-l all|inuse|user|cache|kernel]
+[\-\-vmlinux|-m <vmlinux>]
 [\-\-debug|-d]
+
+.B kdump-tool
+[\-\-help] addrandoff [\--help]
+[\-\-vmcore|-v <vmcore>]
+[\-\-vmlinux|-m <vmlinux>]
+
+.B kdump-tool
+[\-\-help] makedyn [\--help]
+<vmlinux> [<vmlinux> [...]]
 
 .B kdump-tool
 [\-\-help] dumpmem [\--help]
@@ -83,9 +93,36 @@ will process the pelf file into a velf file.
 .BR "kdump-tool tovelf -I outmem -o <velf file>"
 will process /dev/mem and /dev/vmcore directly into a velf file.
 
+For
+.BR gdb
+to properly interpret kernels with a random base address, it has to be
+told the load offset.  It has to have the original
+.BR <vmlinux>
+file to do this, then it can compare symbol offsets to symbol addresses
+it has access to in the dump file.  Adding the
+.BR "--vmlinux <vmlinux>"
+option to the
+.BR tovelf
+subcommand will do this, or you can add it later to an existing virtual
+memory coredump with the
+.BR "kdump-tool addrandoff -m <vmlinux> -v <vmcore>"
+command.
+
+As an additional problem for debugging kernels with a random base address,
+the
+.BR vmlinux
+compile for most architectures is marked as a regular executable, but
+.BR gdb
+requires that it be a relocatable executable to handle the load offset.
+The command
+.BR "kdump-tool makedyn <vmlinux>"
+will convert a vmlinux to a relocatable executable command for you.
+
 .BR kdump-tool
 will also dump ranges of memory from the various input types it
-supports using the dumpmem operation.  The parameters all work as
+supports using the
+.BR dumpmem
+subcommand.  The parameters all work as
 before, with the addition of -p, which specifies the address as
 physical.  Otherwise the address is assumed to be virtual.
 
@@ -107,6 +144,10 @@ Set the output file, output will go to stdout if this is not supplied.
 .TP
 .I "\-\-vmcore|-v <vmcore>"
 Set the location of the vmcore file, /proc/vmcore by default.
+.TP
+.I "\-\-vmlinux|-m <vmlinux>"
+The vmlinux file for the core dump being processed.  Require to add the
+load offset for a randomized base kernel.
 .TP
 .I "\-\-infile|\-i <oldmem or pelf>"
 Set the location of the input file for converting to velf.  This can

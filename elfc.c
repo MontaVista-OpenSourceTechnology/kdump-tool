@@ -46,6 +46,13 @@
 
 #include "elfc.h"
 
+/*
+ * FIXMES:
+ *
+ * Need to add protection to keep the user from directly modifying symbol
+ * and string table data.
+ */
+
 #define elfc_align(v, a) (((v) + (a) - 1) & ~((typeof(v)) (a - 1)))
 
 struct elfc_note {
@@ -114,6 +121,14 @@ struct elfc {
 	struct elfc_shdr *shdrs;
 	Elf32_Word num_shdrs;
 	int alloced_shdrs;
+
+	/*
+	 * Indexes for special sections we use.
+	 */
+	Elf32_Word shstrtab;
+	Elf32_Word strtab;
+	Elf32_Word symtab;
+	Elf32_Word symtab_size;
 
 	struct elfc_note *notes;
 	int num_notes;
@@ -365,17 +380,19 @@ elfc_tmpfd(void)
 	if (!tmpdir)
 		tmpdir = "/tmp";
 
-	fname = malloc(strlen(tmpdir) + strlen(rname) + 2);
+	fname = malloc(strlen(tmpdir) + strlen(rname) + 12);
 	if (!fname) {
 		errno = ENOMEM;
 		return -1;
 	}
-	sprintf(fname, "%s/%s", tmpdir, rname);
+	sprintf(fname, "%s/%s.%d", tmpdir, rname, (int) getpid());
 	fd = open(fname, O_RDWR | O_TRUNC | O_CREAT, S_IRUSR | S_IWUSR);
-	free(fname);
-	if (fd == -1)
+	if (fd == -1) {
+		free(fname);
 		return -1;
+	}
 	unlink(fname);
+	free(fname);
 	return fd;
 }
 
@@ -448,16 +465,22 @@ elfc_phdr_tmpfile_pre_write(struct elfc *e, GElf_Phdr *phdr,
 	int rv;
 
 	tf->fd = elfc_tmpfd();
-	if (tf->fd == -1)
+	if (tf->fd == -1) {
+		e->eerrno = errno;
 		return -1;
+	}
 
 	fd = elfc_get_fd(e);
 	rv = lseek(fd, phdr->p_offset, SEEK_SET);
-	if (rv == -1)
+	if (rv == -1) {
 		e->eerrno = errno;
-	rv = elfc_copy_fd_range(tf->fd, fd, phdr->p_filesz);
-	if (rv == -1)
 		return -1;
+	}
+	rv = elfc_copy_fd_range(tf->fd, fd, phdr->p_filesz);
+	if (rv == -1) {
+		e->eerrno = errno;
+		return -1;
+	}
 	return 0;
 }
 
@@ -469,12 +492,16 @@ elfc_phdr_tmpfile_do_write(struct elfc *e, int fd, GElf_Phdr *phdr,
 	int rv;
 
 	rv = lseek(tf->fd, 0, SEEK_SET);
-	if (rv == -1)
+	if (rv == -1) {
+		e->eerrno = errno;
 		return -1;
+	}
 
 	rv = elfc_copy_fd_range(fd, tf->fd, phdr->p_filesz);
-	if (rv == -1)
+	if (rv == -1) {
+		e->eerrno = errno;
 		return -1;
+	}
 
 	close(tf->fd);
 	tf->fd = -1;
@@ -861,6 +888,9 @@ elfc_shdr_tmpfile_set_data(struct elfc *e, GElf_Shdr *shdr, void *data,
 static void
 elfc_shdr_tmpfile_free(struct elfc *e, void *data, void *userdata)
 {
+	/* data is only set here in the case of symbol and string tables. */
+	if (data)
+		free(data);
 	if (userdata)
 		free(userdata);
 }
@@ -1048,7 +1078,7 @@ elfc_shdr_alloc_read(struct elfc *e, int snum, GElf_Off off,
 		return -1;
 	}
 	rv = e->shdrs[snum].get_data(e, &e->shdrs[snum].sh, e->shdrs[snum].data,
-				     off, buf, len, e->phdrs[snum].userdata);
+				     off, buf, len, e->shdrs[snum].userdata);
 	if (rv) {
 		free(buf);
 		e->eerrno = errno;
@@ -1127,6 +1157,7 @@ elfc_get ## name(struct elfc *e)		\
 
 elfc_accessor(machine, GElf_Half);
 elfc_accessor(type, GElf_Half);
+elfc_accessor(entry, GElf_Addr);
 
 void
 elfc_setclass(struct elfc *e, unsigned char class)
@@ -1152,7 +1183,7 @@ elfc_getencoding(struct elfc *e)
 	return e->hdr.e_ident[EI_DATA];
 }
 
-static int elfarch = 
+static int elfarch =
 #ifdef __x86_64__
 	EM_X86_64
 #elif defined(__mips__)
@@ -1195,6 +1226,7 @@ elfc_put ## type(struct elfc *e, GElf_## type w)	\
 elfc_getput(Half, 16)
 elfc_getput(Word, 32)
 elfc_getput(Xword, 64)
+elfc_getput(Section, 16)
 
 static GElf_Addr
 elfc_getAddr(struct elfc *e, GElf_Addr w)
@@ -1258,6 +1290,18 @@ elfc_putOff(struct elfc *e, GElf_Off w)
 		else
 			return elfc_putXword(e, w);
 	}
+}
+
+unsigned char
+elfc_getuchar(struct elfc *e, unsigned char v)
+{
+	return v;
+}
+
+unsigned char
+elfc_putuchar(struct elfc *e, unsigned char v)
+{
+	return v;
 }
 
 int
@@ -1894,6 +1938,30 @@ elfc_get_note(struct elfc *e, int index,
 	return 0;
 }
 
+int
+elfc_del_note(struct elfc *e, int index)
+{
+	int rv;
+	int i;
+
+	if (!e->notes && (e->fd != -1)) {
+		rv = elfc_read_notes(e);
+		if (rv == -1)
+			return rv;
+	}
+
+	if (index > e->num_notes) {
+		e->eerrno = EINVAL;
+		return -1;
+	}
+
+	e->num_notes--;
+	for (i = index; i < e->num_notes; i++)
+		e->notes[i] = e->notes[i + 1];
+
+	return 0;
+}
+
 static void
 free_phdrs(struct elfc *e)
 {
@@ -2209,9 +2277,9 @@ read_elf32_shdrs(struct elfc *e, char *buf)
 		return -1;
 	}
 
-	if (e->shdrs) {
+	if (e->shdrs)
 		free(e->shdrs);
-	}
+
 	e->num_shdrs = e->hdr.e_shnum;
 	e->alloced_shdrs = e->hdr.e_shnum;
 	e->shdrs = shdrs;
@@ -2249,7 +2317,7 @@ read_elf64_shdrs(struct elfc *e, char *buf)
 
 	for (i = 0; i < e->num_shdrs; i++) {
 		Elf64_Shdr *p64 = ((Elf64_Shdr *)
-				   (buf + (i * e->hdr.e_phentsize)));
+				   (buf + (i * e->hdr.e_shentsize)));
 
 #define ShdrE(type, name) e->shdrs[i].sh.sh_ ## name = \
 	elfc_get ## type(e, p64->sh_ ## name)
@@ -2265,8 +2333,10 @@ elfc_read_shdrs(struct elfc *e)
 {
 	void *buf;
 	int rv;
+	Elf32_Word i;
+	const char *name;
 
-	rv = elfc_alloc_read_data(e, e->hdr.e_phoff, &buf,
+	rv = elfc_alloc_read_data(e, e->hdr.e_shoff, &buf,
 				  e->hdr.e_shentsize * e->hdr.e_shnum);
 	if (rv == -1)
 		return -1;
@@ -2276,24 +2346,361 @@ elfc_read_shdrs(struct elfc *e)
 	else
 		rv = read_elf64_shdrs(e, buf);
 	free(buf);
-	if (rv != -1) {
-		int i;
+	if (rv == -1)
+		return -1;
 
-		for (i = 0; i < e->num_shdrs; i++) {
-			e->shdrs[i].userdata = elfc_shdr_tmpfile_alloc(e);
-			if (!e->shdrs[i].userdata) {
-				e->eerrno = ENOMEM;
-				return -1;
-			}
-			e->shdrs[i].pre_write = elfc_shdr_tmpfile_pre_write;
-			e->shdrs[i].do_write = elfc_shdr_tmpfile_do_write;
-			e->shdrs[i].post_write = elfc_shdr_tmpfile_post_write;
-			e->shdrs[i].data_free = elfc_shdr_tmpfile_free;
-			e->shdrs[i].get_data = elfc_shdr_tmpfile_get_data;
-			e->shdrs[i].set_data = elfc_shdr_tmpfile_set_data;
+	for (i = 0; i < e->num_shdrs; i++) {
+		e->shdrs[i].userdata = elfc_shdr_tmpfile_alloc(e);
+		if (!e->shdrs[i].userdata) {
+			e->eerrno = ENOMEM;
+			return -1;
 		}
+		e->shdrs[i].pre_write = elfc_shdr_tmpfile_pre_write;
+		e->shdrs[i].do_write = elfc_shdr_tmpfile_do_write;
+		e->shdrs[i].post_write = elfc_shdr_tmpfile_post_write;
+		e->shdrs[i].data_free = elfc_shdr_tmpfile_free;
+		e->shdrs[i].get_data = elfc_shdr_tmpfile_get_data;
+		e->shdrs[i].set_data = elfc_shdr_tmpfile_set_data;
 	}
+
+	e->shstrtab = e->hdr.e_shstrndx;
+	if (e->shstrtab == 0)
+		/* No use looking for other sections. */
+		goto no_shstrtab;
+
+	if (e->shstrtab >= e->num_shdrs) {
+		e->eerrno = EINVAL;
+		return -1;
+	}
+
+	/* Validate .shstrtab. */
+	if (e->shdrs[e->shstrtab].sh.sh_type != SHT_STRTAB) {
+		e->eerrno = EINVAL;
+		return -1;
+	}
+	name = elfc_get_shstr(e, e->shdrs[e->shstrtab].sh.sh_name);
+	if (!name || strcmp(name, ".shstrtab") != 0) {
+		e->eerrno = EINVAL;
+		return -1;
+	}
+
+	/* Now look for .strtab and .symtab. */
+	for (i = 0; i < e->num_shdrs; i++) {
+		if (e->shdrs[i].sh.sh_type == SHT_STRTAB) {
+			if (e->strtab || i == e->shstrtab)
+				continue;
+		} else if (e->shdrs[i].sh.sh_type == SHT_SYMTAB) {
+			if (e->symtab)
+				continue;
+		} else
+			continue;
+
+		name = elfc_get_shstr(e, e->shdrs[i].sh.sh_name);
+
+		if (e->shdrs[i].sh.sh_type == SHT_STRTAB &&
+		    name && strcmp(name, ".strtab") == 0)
+			e->strtab = i;
+		else if (e->shdrs[i].sh.sh_type == SHT_SYMTAB &&
+			 name && strcmp(name, ".symtab") == 0)
+			e->symtab = i;
+	}
+
+	if (e->symtab) {
+		if (e->shdrs[e->symtab].sh.sh_entsize !=
+		    elfc_sym_size_one(e)) {
+			e->eerrno = EINVAL;
+			return -1;
+		}
+		e->symtab_size = e->shdrs[e->symtab].sh.sh_size /
+			elfc_sym_size_one(e);
+	}
+no_shstrtab:
 	return rv;
+}
+
+Elf32_Word
+elfc_sym_size_one(struct elfc *e)
+{
+	if (e->hdr.e_ident[EI_CLASS] == ELFCLASS32)
+		return sizeof(Elf32_Sym);
+	else
+		return sizeof(Elf64_Sym);
+}
+
+Elf32_Word
+elfc_num_syms(struct elfc *e)
+{
+	return e->symtab_size;
+}
+
+static const char *
+elfc_get_genstr(struct elfc *e, struct elfc_shdr *shstrsect,
+		Elf32_Word shindex, Elf32_Word index)
+{
+	char *strdata;
+
+	if (index == 0 || index >= shstrsect->sh.sh_size) {
+		e->eerrno = EINVAL;
+		return NULL;
+	}
+	if (!shstrsect->data) {
+		void *odata;
+		if (elfc_shdr_alloc_read(e, shindex, 0, &odata,
+					 shstrsect->sh.sh_size) == -1) {
+			return NULL;
+		}
+		strdata = odata;
+
+		/* Make user it ends in a nil. */
+		if (strdata[shstrsect->sh.sh_size - 1] != '\0') {
+			free(odata);
+			e->eerrno = EINVAL;
+			return NULL;
+		}
+		/*
+		 * Since "data" is unused for these types of section
+		 * headers, install our own data there.
+		 */
+		shstrsect->data = odata;
+	} else {
+		strdata = shstrsect->data;
+	}
+
+	if (strdata[index - 1] != '\0') {
+		/* Every string must have a nil before it. */
+		e->eerrno = EINVAL;
+		return NULL;
+	}
+
+	return strdata + index;
+}
+
+const char *
+elfc_get_shstr(struct elfc *e, Elf32_Word index)
+{
+	if (e->shstrtab == 0) {
+		e->eerrno = ENOENT;
+		return NULL;
+	}
+	return elfc_get_genstr(e, &e->shdrs[e->shstrtab], e->shstrtab, index);
+}
+
+const char *
+elfc_get_str(struct elfc *e, Elf32_Word index)
+{
+	if (e->strtab == 0) {
+		e->eerrno = ENOENT;
+		return NULL;
+	}
+	return elfc_get_genstr(e, &e->shdrs[e->strtab], e->strtab, index);
+}
+
+static struct elfc_shdr *
+elfc_check_sym(struct elfc *e, Elf32_Word index)
+{
+	struct elfc_shdr *symsect;
+
+	if (e->symtab == 0) {
+		e->eerrno = ENOENT;
+		return NULL;
+	}
+
+	if (index == 0 || index >= e->symtab_size) {
+		e->eerrno = EINVAL;
+		return NULL;
+	}
+	symsect = &e->shdrs[e->symtab];
+
+	if (!symsect->data) {
+		void *odata;
+		if (elfc_shdr_alloc_read(e, e->symtab, 0, &odata,
+					 symsect->sh.sh_size) == -1) {
+			return NULL;
+		}
+		/*
+		 * Since "data" is unused for these types of section
+		 * headers, install our own data there.
+		 */
+		symsect->data = odata;
+	}
+
+	return symsect;
+}
+
+#define Sym32_Entries \
+	ShdrE(Word,	name);		\
+	ShdrE(Addr,	value);		\
+	ShdrE(Word,	size);		\
+	ShdrE(uchar,	info);		\
+	ShdrE(uchar,	other);		\
+	ShdrE(Section,	shndx);
+
+#define Sym64_Entries \
+	ShdrE(Word,	name);		\
+	ShdrE(uchar,	info);		\
+	ShdrE(uchar,	other);		\
+	ShdrE(Section,	shndx);		\
+	ShdrE(Addr,	value);		\
+	ShdrE(Word,	size);
+
+static void
+read_elf32_sym(struct elfc *e, struct elfc_shdr *symsect,
+	       Elf32_Word index, GElf_Sym *rsym)
+{
+	Elf32_Sym *sym;
+
+	sym = symsect->data;
+	sym += index;
+
+#define ShdrE(type, name) rsym->st_ ## name = \
+	elfc_get ## type(e, sym->st_ ## name)
+		Sym32_Entries;
+#undef ShdrE
+}
+
+static void
+read_elf64_sym(struct elfc *e, struct elfc_shdr *symsect,
+	       Elf32_Word index, GElf_Sym *rsym)
+{
+	Elf64_Sym *sym;
+
+	sym = symsect->data;
+	sym += index;
+
+#define ShdrE(type, name) rsym->st_ ## name = \
+	elfc_get ## type(e, sym->st_ ## name)
+		Sym64_Entries;
+#undef ShdrE
+}
+
+int
+elfc_get_sym(struct elfc *e, Elf32_Word index, GElf_Sym *sym)
+{
+	struct elfc_shdr *symsect;
+
+	symsect = elfc_check_sym(e, index);
+	if (!symsect)
+		return -1;
+
+	if (e->hdr.e_ident[EI_CLASS] == ELFCLASS32)
+		read_elf32_sym(e, symsect, index, sym);
+	else
+		read_elf64_sym(e, symsect, index, sym);
+
+	return 0;
+}
+
+static void
+write_elf32_sym(struct elfc *e, struct elfc_shdr *symsect,
+		Elf32_Word index, GElf_Sym *rsym)
+{
+	Elf32_Sym *sym;
+
+	sym = symsect->data;
+	sym += index;
+
+#define ShdrE(type, name) sym->st_ ## name = \
+	elfc_put ## type(e, rsym->st_ ## name)
+		Sym32_Entries;
+#undef ShdrE
+}
+
+static void
+write_elf64_sym(struct elfc *e, struct elfc_shdr *symsect,
+		Elf32_Word index, GElf_Sym *rsym)
+{
+	Elf64_Sym *sym;
+
+	sym = symsect->data;
+	sym += index;
+
+#define ShdrE(type, name) sym->st_ ## name = \
+	elfc_put ## type(e, rsym->st_ ## name)
+		Sym64_Entries;
+#undef ShdrE
+}
+
+int
+elfc_set_sym(struct elfc *e, Elf32_Word index, GElf_Sym *sym)
+{
+	struct elfc_shdr *symsect;
+
+	symsect = elfc_check_sym(e, index);
+	if (!symsect)
+		return -1;
+
+	if (e->hdr.e_ident[EI_CLASS] == ELFCLASS32)
+		write_elf32_sym(e, symsect, index, sym);
+	else
+		write_elf64_sym(e, symsect, index, sym);
+
+	return 0;
+}
+
+static Elf32_Word
+read_elf32_sym_name(struct elfc *e, struct elfc_shdr *symsect,
+		    Elf32_Word index)
+{
+	Elf32_Sym *sym;
+
+	sym = symsect->data;
+	sym += index;
+
+	return sym->st_name;
+}
+
+static int
+read_elf64_sym_name(struct elfc *e, struct elfc_shdr *symsect,
+		    Elf32_Word index)
+{
+	Elf64_Sym *sym;
+
+	sym = symsect->data;
+	sym += index;
+
+	return sym->st_name;
+}
+
+const char *
+elfc_get_sym_name(struct elfc *e, Elf32_Word index)
+{
+	Elf32_Word stridx;
+	struct elfc_shdr *symsect;
+
+	symsect = elfc_check_sym(e, index);
+	if (!symsect)
+		return NULL;
+
+	if (e->hdr.e_ident[EI_CLASS] == ELFCLASS32)
+		stridx = read_elf32_sym_name(e, symsect, index);
+	else
+		stridx = read_elf64_sym_name(e, symsect, index);
+
+	return elfc_get_str(e, stridx);
+}
+
+int
+elfc_lookup_sym(struct elfc *e, const char *name, GElf_Sym *sym,
+	        Elf32_Word startidx, Elf32_Word *symidx)
+{
+	Elf32_Word nsyms = elfc_num_syms(e);
+	Elf32_Word i;
+	const char *tname;
+
+	for (i = startidx + 1; i < nsyms; i++) {
+		tname = elfc_get_sym_name(e, i);
+		if (tname && strcmp(tname, name) == 0)
+			goto found;
+	}
+	e->eerrno = ENOENT;
+	return -1;
+
+found:
+	if (sym)
+		elfc_get_sym(e, i, sym);
+	if (symidx)
+		*symidx = i;
+	return 0;
 }
 
 struct elfc *
@@ -2475,7 +2882,7 @@ elfc_shdr_size(struct elfc *e)
 {
 	GElf_Off size;
 	size = elfc_shdr_size_one(e) * e->hdr.e_shnum;
-	if ((e->num_phdrs > 65534) &&
+	if ((e->num_shdrs > 65534) &&
 	    ((e->hdr.e_shnum == 0) || (e->shdrs[0].sh.sh_type != SHT_NULL)))
 		size += elfc_shdr_size_one(e);
 	return size;
@@ -2564,6 +2971,18 @@ call_shdr_post_write(struct elfc *e, int i)
 				       e->shdrs[i].userdata);
 }
 
+static int
+isregfile(int fd)
+{
+	int rv;
+	struct stat st;
+
+	rv = fstat(fd, &st);
+	if (rv == -1)
+		return -1;
+	return S_ISREG(st.st_mode);
+}
+
 int
 elfc_write(struct elfc *e)
 {
@@ -2637,27 +3056,11 @@ elfc_write(struct elfc *e)
 		off += elfc_phdr_size(e);
 	}
 
-	/* Ignore errors here, it will fail on stdin. */
-	(void) lseek(e->fd, 0, SEEK_SET);
-
-	if (e->hdr.e_ident[EI_CLASS] == ELFCLASS32)
-		rv = write_elf32_ehdr(e);
-	else
-		rv = write_elf64_ehdr(e);
-	if (rv == -1)
-		return -1;
-
-	off = elfc_headers_size(e);
-	for (i = 0; i < e->num_shdrs; i++) {
-		e->shdrs[i].sh.sh_offset = off;
-		off += e->shdrs[i].sh.sh_size;
-	}
-
-	for (i = 0; i < e->num_phdrs; i++) {
-		e->phdrs[i].p.p_offset = off;
-		off += e->phdrs[i].p.p_filesz;
-	}
-
+	/*
+	 * Do pre-write before reset the file so that we are
+	 * still working with the original offsets when we save off
+	 * the information.
+	 */
 	for (i = 0; i < e->num_shdrs; i++) {
 		if (e->shdrs[i].pre_write) {
 			rv = e->shdrs[i].pre_write(e, &e->shdrs[i].sh,
@@ -2670,7 +3073,7 @@ elfc_write(struct elfc *e)
 					call_shdr_post_write(e, i);
 				goto out;
 			}
-		}					
+		}
 	}
 
 	for (i = 0; i < e->num_phdrs; i++) {
@@ -2685,7 +3088,40 @@ elfc_write(struct elfc *e)
 					call_phdr_post_write(e, i);
 				goto out;
 			}
-		}					
+		}
+	}
+
+	/* Clear out the old data now that it should be saved. */
+	rv = isregfile(e->fd);
+	if (rv == -1) {
+		e->eerrno = errno;
+		goto out;
+	} else if (rv) {
+		rv = lseek(e->fd, 0, SEEK_SET);
+		if (rv != -1)
+			rv = ftruncate(e->fd, 0);
+		if (rv == -1) {
+			e->eerrno = errno;
+			goto out;
+		}
+	}
+
+	if (e->hdr.e_ident[EI_CLASS] == ELFCLASS32)
+		rv = write_elf32_ehdr(e);
+	else
+		rv = write_elf64_ehdr(e);
+	if (rv == -1)
+		goto out;
+
+	off = elfc_headers_size(e);
+	for (i = 0; i < e->num_shdrs; i++) {
+		e->shdrs[i].sh.sh_offset = off;
+		off += e->shdrs[i].sh.sh_size;
+	}
+
+	for (i = 0; i < e->num_phdrs; i++) {
+		e->phdrs[i].p.p_offset = off;
+		off += e->phdrs[i].p.p_filesz;
 	}
 
 	rv = elfc_write_shdrs(e);

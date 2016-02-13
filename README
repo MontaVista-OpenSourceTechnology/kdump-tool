@@ -12,11 +12,27 @@ To use this, use the kexec/kdump instructions to get into a crash dump
 kernel (the kernel that boots from the crashed kernel).  It will have
 /dev/oldmem and /proc/vmcore available.
 
-Run "kdumptool topelf -o pelffile" and copy pelffile to your system
-where you will be doing the analysis.
+Run "kdump-tool topelf -o pmcore" and copy pmcore to your system
+where you will be doing the analysis.  Or do:
+  kdump-tool topelf | gzip >pmcore.gz
+to compress it, probably a good idea as it will compress quite well.
 
-Before doing analysis, run "kdumptool tovelf -i pelffile -o kcore" to
-generate the gdb-usable core file.
+Before doing analysis, uncompress it if necessary run:
+  kdump-tool tovelf -i pmcore -o vmcore
+to generate the gdb-usable core file.
 
-Then do "gdb vmlinux kcore".  For more information, see:
+If your kernel use a randomized base, you need the original vmlinux
+file so kdump-tool can calculate the offsets.  Use the following
+options to tovelf instead:
+  kdump-tool tovelf -i pmcore -o vmcore -m vmlinux
+Then run:
+  kdump-tool makedyn vmlinux
+to convert the vmlinux file into a relocatable executable.  Then gdb
+will be able to debug it without issues. If you forget to add the -m
+option to running tovelf, all is not lost.  You can do:
+  kdump-tool addrandoff -m vmlinux -v vmcore
+to add the information to an existing vmcore file.  This will replace
+any existing offset information.
+
+Then do "gdb vmlinux vmcore".  For more information, see:
   http://www.elinux.org/Debugging_The_Linux_Kernel_Using_Gdb

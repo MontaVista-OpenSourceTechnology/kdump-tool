@@ -125,6 +125,7 @@ enum base_vmci {
 	VMCI_SIZE_list_head,
 	VMCI_OFFSET_list_head__next,
 	VMCI_OFFSET_list_head__prev,
+	VMCI_SYMBOL__stext
 };
 
 #define _VMCI_CHECK_FOUND(vmci, fullname)				\
@@ -139,6 +140,8 @@ int process_base_vmci(struct kdt_data *d, struct vmcoreinfo_data *vmci,
 		      struct elfc *elf)
 {
 	int rv;
+
+	VMCI_CHECK_FOUND(vmci, SYMBOL, _stext);
 
 	VMCI_CHECK_FOUND(vmci, SIZE, list_head);
 	d->list_head_size = vmci[VMCI_SIZE_list_head].val;
@@ -397,7 +400,7 @@ copy_elf_notes(struct elfc *out, struct elfc *in,
 		if (data)
 			free(data);
 		return -1;
-	}	
+	}
 	return 0;
 }
 
@@ -584,12 +587,12 @@ fetch_structlong(struct kdt_data *d,
 	int rv;
 
 	if (d->is_64bit) {
-		uint64_t val;
+		uint64_t val = 0;
 		rv = fetch_struct64(d, data, data_size, offset, &val, name);
 		if (rv == 0)
 			*out = val;
 	} else {
-		uint32_t val;
+		uint32_t val = 0;
 		rv = fetch_struct32(d, data, data_size, offset, &val, name);
 		if (rv == 0)
 			*out = val;
@@ -604,7 +607,7 @@ find_page_by_pfn(struct kdt_data *d, struct page_range *range, uint64_t pfn,
 {
 	int rv;
 	GElf_Addr offset;
-	
+
 	if (!range)
 		return -1;
 
@@ -829,7 +832,7 @@ process_zone_free_lists(struct kdt_data *d, unsigned char *zone)
 static int64_t
 process_pglist_free_lists(struct kdt_data *d, unsigned char *pglist)
 {
-	uint32_t count;
+	uint32_t count = 0;
 	uint32_t i;
 	int rv;
 	int64_t total = 0;
@@ -889,11 +892,11 @@ process_pglist(struct kdt_data *d, GElf_Addr pglist_addr)
 			    node_spanned_pages);
 	if (rv == -1)
 		goto out_err;
-	
+
 	rv = process_pglist_free_lists(d, pglist);
 	if (rv == -1)
 		goto out_err;
-	
+
 out_err:
 	free(pglist);
 	return rv;
@@ -1016,7 +1019,7 @@ read_sparse_maps(struct kdt_data *d, struct vmcoreinfo_data *vmci, bool extreme)
 				 sections + (j * d->mem_section_size));
 			if (rv == -1)
 				goto out_err;
-		}	
+		}
 	}
 
 	VMCI_CHECK_FOUND(vmci, SYMBOL, contig_page_data);
@@ -1568,6 +1571,7 @@ topelf(int argc, char *argv[])
 		VMCI_SIZE(list_head),
 		VMCI_OFFSET(list_head, next),
 		VMCI_OFFSET(list_head, prev),
+		VMCI_SYMBOL(_stext),
 		{ NULL }
 	};
 	struct kdt_data kdt_data, *d = &kdt_data;
@@ -1758,6 +1762,78 @@ out_err:
 }
 
 static int
+add_auxv(struct elfc *e, const char *vmlinux, GElf_Addr dyn_stext)
+{
+	int rv = -1;
+        unsigned char elfclass;
+	struct elfc *vml_elf = NULL;
+	int vml_fd = -1;
+	GElf_Sym sym;
+	GElf_Addr dyn_entry;
+
+	vml_elf = elfc_alloc();
+	if (!vml_elf) {
+		fprintf(stderr, "Unable to allocate ELF data for vmlinux\n");
+		return -1;
+	}
+	vml_fd = open(vmlinux, O_RDWR);
+	if (vml_fd == -1) {
+		fprintf(stderr, "Error opening vmlinux: %s\n", strerror(errno));
+		goto out;
+	}
+
+	if (elfc_open(vml_elf, vml_fd) == -1) {
+		fprintf(stderr, "Error elf opening vmlinux: %s\n",
+			strerror(elfc_get_errno(vml_elf)));
+		goto out;
+	}
+
+	if (elfc_lookup_sym(vml_elf, "_stext", &sym, 0, NULL) == -1) {
+		fprintf(stderr, "Can't find _stext in vmlinux: %s\n",
+			strerror(elfc_get_errno(vml_elf)));
+		goto out;
+	}
+
+	if (dyn_stext == sym.st_value) {
+		/* No need for this, return 0 to say we didn't do anything. */
+		rv = 0;
+		goto out;
+	}
+
+	dyn_entry = elfc_getentry(vml_elf) + (dyn_stext - sym.st_value);
+
+	elfclass = elfc_getclass(e);
+	if (elfclass == ELFCLASS32) {
+		Elf32_auxv_t auxv;
+
+		auxv.a_type = AT_ENTRY;
+		auxv.a_un.a_val = dyn_entry;
+		rv = elfc_add_note(e, NT_AUXV, "CORE", 5, &auxv, sizeof(auxv));
+	} else if (elfclass == ELFCLASS64) {
+		Elf64_auxv_t auxv;
+
+		auxv.a_type = AT_ENTRY;
+		auxv.a_un.a_val = dyn_entry;
+		rv = elfc_add_note(e, NT_AUXV, "CORE", 5, &auxv, sizeof(auxv));
+	} else {
+		fprintf(stderr, "Unknown elfclass?: %d\n", elfclass);
+		rv = -1;
+	}
+
+	/* Return 1 to denote that we changed something. */
+	if (rv == 0)
+		rv = 1;
+
+out:
+	if (vml_elf)
+		elfc_free(vml_elf);
+	if (vml_fd != -1)
+		close(vml_fd);
+	return rv;
+}
+
+
+static int
 velf_page_handler(struct elfc *pelf,
 		  GElf_Addr paddr,
 		  GElf_Addr vaddr,
@@ -1795,19 +1871,23 @@ tovelf(int argc, char *argv[])
 		{ "elfclass",	required_argument,	NULL, 'c' },
 		{ "level",	required_argument,	NULL, 'l' },
 		{ "debug",	no_argument,		NULL, 'd' },
+		{ "vmlinux",	required_argument,	NULL, 'm' },
 		{ NULL }
 	};
 	static const char *helpstr[] = {
 		"This info",
-		"The input file, defaults to /dev/mem if intype is oldmem, "
-		"otherwise required",
+		"The input file, defaults to /dev/mem if intype is oldmem,"
+		" otherwise required",
 		"File send output to, stdout if not specified",
 		"The vmcore file, defaults to /proc/vmcore, only for oldmem",
 		"The file type, either pelf or oldmem, defaults to pelf",
 		"The physical address of the kernel page descriptor",
 		"Set the elfclass (either 32 or 64)",
 		"Set the dump level: all, inuse, user, cache, or kernel",
-		"increment the debug level",
+		"Increment the debug level",
+		"Set the vmlinux file for this build, required if the dumped"
+		" kernel has a randomized base to set the offset (or use"
+		" addrandomoffset later).",
 		NULL
 	};
 	int fd = -1;
@@ -1821,17 +1901,19 @@ tovelf(int argc, char *argv[])
 		VMCI_SIZE(list_head),
 		VMCI_OFFSET(list_head, next),
 		VMCI_OFFSET(list_head, prev),
+		VMCI_SYMBOL(_stext),
 		{ NULL }
 	};
 	int do_oldmem = 0;
 	struct velf_data dpage;
 	int elfclass = ELFCLASSNONE;
 	int level = DUMP_KERNEL;
+	char *vmlinux = NULL;
 
 	memset(d, 0, sizeof(*d));
 	for (;;) {
 		int curr_optind = optind;
-		int c = getopt_long(argc, argv, "+ho:i:v:I:P:c:l:d", longopts,
+		int c = getopt_long(argc, argv, "+ho:i:v:I:P:c:l:dm:", longopts,
 				    NULL);
 		if (c == -1)
 			break;
@@ -1881,6 +1963,9 @@ tovelf(int argc, char *argv[])
 				subcmd_usage("Unknown dump level: %s\n",
 					     optarg);
 			}
+			break;
+		case 'm':
+			vmlinux = optarg;
 			break;
 		case 'h':
 			subcmd_help("", longopts, helpstr);
@@ -1998,6 +2083,13 @@ tovelf(int argc, char *argv[])
 		/* Don't print stuff if the elf file goes to stdout */
 		print_skipped(d);
 
+	if (vmlinux) {
+		rv = add_auxv(velf, vmlinux, vmci[VMCI_SYMBOL__stext].val);
+		if (rv == -1)
+			fprintf(stderr, "Warning: Unable to add auxv: %s\n",
+				strerror(elfc_get_errno(d->elf)));
+	}
+
 	rv = elfc_write(velf);
 	if (rv == -1) {
 		fprintf(stderr, "Error writing elfc file: %s\n",
@@ -2023,6 +2115,253 @@ out:
 out_err:
 	rv = 1;
 	goto out;
+}
+
+static int
+addrandomoffset(int argc, char *argv[])
+{
+	int rv = 1;
+	struct elfc *velf = NULL;
+	int vfd = -1;
+	int i;
+	int num_notes;
+	struct vmcoreinfo_data vmci[] = {
+		VMCI_ADDRESS(phys_pgd_ptr),
+		VMCI_SIZE(list_head),
+		VMCI_OFFSET(list_head, next),
+		VMCI_OFFSET(list_head, prev),
+		VMCI_SYMBOL(_stext),
+		{ NULL }
+	};
+	static const struct option longopts[] = {
+		{ "help",	no_argument,		NULL, 'h' },
+		{ "vmcore",	required_argument,	NULL, 'v' },
+		{ "vmlinux",	required_argument,	NULL, 'm' },
+		{ NULL }
+	};
+	static const char *helpstr[] = {
+		"This info",
+		"The vmcore file, required",
+		"Set the vmlinux file for this core, required.",
+		NULL
+	};
+	const char *vmcore = NULL, *vmlinux = NULL;
+
+	for (;;) {
+		int curr_optind = optind;
+		int c = getopt_long(argc, argv, "+hv:m:", longopts,
+				    NULL);
+		if (c == -1)
+			break;
+		switch (c) {
+		case 'v':
+			vmcore = optarg;
+			break;
+		case 'm':
+			vmlinux = optarg;
+			break;
+		case 'h':
+			subcmd_help("", longopts, helpstr);
+			return 0;
+		case '?':
+			subcmd_usage("Unknown option: %s\n", argv[curr_optind]);
+		}
+	}
+
+	if (!vmcore) {
+		fprintf(stderr, "No vmcore file given\n");
+		goto out;
+	}
+
+	if (!vmlinux) {
+		fprintf(stderr, "No vmlinux file given\n");
+		goto out;
+	}
+
+	velf = elfc_alloc();
+	if (!velf) {
+		fprintf(stderr, "Unable to allocate ELF data for %s\n", vmcore);
+		goto out;
+	}
+	vfd = open(vmcore, O_RDWR);
+	if (vfd == -1) {
+		fprintf(stderr, "Error opening %s: %s\n", vmcore,
+			strerror(errno));
+		goto out;
+	}
+
+	if (elfc_open(velf, vfd) == -1) {
+		fprintf(stderr, "Error elf opening %s: %s\n", vmcore,
+			strerror(elfc_get_errno(velf)));
+		goto out;
+	}
+
+	handle_vminfo_notes(velf, vmci);
+	if (!vmci[VMCI_SYMBOL__stext].found) {
+		fprintf(stderr, "No _stext symbol found in %ss notes\n",
+			vmcore);
+		goto out;
+	}
+
+	num_notes = elfc_get_num_notes(velf);
+	for (i = 0; i < num_notes; i++) {
+		GElf_Word note_type;
+		rv = elfc_get_note(velf, i, &note_type, NULL, NULL, NULL, NULL);
+		if (rv == -1) {
+			fprintf(stderr, "Error getting note from %s: %s\n",
+				vmcore, strerror(elfc_get_errno(velf)));
+			goto out;
+		}
+
+		if (note_type != NT_AUXV)
+			continue;
+
+		rv = elfc_del_note(velf, i);
+		if (rv == -1) {
+			fprintf(stderr, "Error getting auxv from %s: %s\n",
+				vmcore, strerror(elfc_get_errno(velf)));
+			goto out;
+		}
+		break;
+	}
+
+	rv = add_auxv(velf, vmlinux, vmci[VMCI_SYMBOL__stext].val);
+	if (rv == -1)
+		fprintf(stderr, "Unable to add auxv: %s\n",
+			strerror(elfc_get_errno(velf)));
+	else if (rv == 1) {
+		rv = elfc_write(velf);
+		if (rv == -1) {
+			fprintf(stderr, "Unable to write elf file: %s\n",
+				strerror(elfc_get_errno(velf)));
+		}
+	}
+out:
+	if (velf)
+		elfc_free(velf);
+	if (vfd)
+		close(vfd);
+
+	return rv;
+}
+
+
+static int makedyn_one_exec(const char *file)
+{
+	int fd, rv;
+	unsigned char e_ident[EI_NIDENT + 2];
+	Elf64_Half type;
+
+	fd = open(file, O_RDWR);
+	if (fd == -1) {
+		fprintf(stderr, "Unable to open %s: %s\n", file,
+			strerror(errno));
+		return 1;
+	}
+
+	rv = read(fd, e_ident, sizeof(e_ident));
+	if (rv == -1) {
+		fprintf(stderr, "Unable to read %s: %s\n", file,
+			strerror(errno));
+		goto out_err;
+	}
+	if (rv < sizeof(e_ident)) {
+		fprintf(stderr, "Only able to read %d bytes from %s\n",
+			rv, file);
+		goto out_err;
+	}
+	if (memcmp(ELFMAG, e_ident, SELFMAG) != 0) {
+		fprintf(stderr, "%s not an ELF file\n", file);
+		goto out_err;
+	}
+
+	if (e_ident[EI_DATA] == ELFDATA2LSB) {
+		type = e_ident[EI_NIDENT] | e_ident[EI_NIDENT + 1] << 8;
+	} else if (e_ident[EI_DATA] == ELFDATA2MSB) {
+		type = e_ident[EI_NIDENT + 1] | e_ident[EI_NIDENT] << 8;
+	} else {
+		fprintf(stderr, "%s: Unknown data encoding: %d\n", file,
+			e_ident[EI_DATA]);
+		goto out_err;
+	}
+
+	if (type == ET_DYN) {
+		/* Already dynamic. */
+		return 0;
+	}
+	if (type != ET_EXEC) {
+		fprintf(stderr, "%s: Not a fixed executable, type is: %d\n",
+			file, type);
+		goto out_err;
+	}
+
+	type = ET_DYN;
+	if (e_ident[EI_DATA] == ELFDATA2LSB) {
+		e_ident[EI_NIDENT] = type & 0xff;
+		e_ident[EI_NIDENT + 1] = type >> 8;
+	} else if (e_ident[EI_DATA] == ELFDATA2MSB) {
+		e_ident[EI_NIDENT + 1] = type & 0xff;
+		e_ident[EI_NIDENT] = type >> 8;
+	}
+
+	rv = lseek(fd, EI_NIDENT, SEEK_SET);
+	if (rv == -1) {
+		fprintf(stderr, "Unable to seek %s: %s\n", file,
+			strerror(errno));
+		goto out_err;
+	}
+
+	rv = write(fd, e_ident + EI_NIDENT, sizeof(type));
+	if (rv == -1) {
+		fprintf(stderr, "Unable to write to %s: %s\n", file,
+			strerror(errno));
+		goto out_err;
+	}
+
+	close(fd);
+	return 0;
+
+out_err:
+	close(fd);
+	return 1;
+}
+
+static int
+makedyn(int argc, char *argv[])
+{
+	int rv;
+	static struct option longopts[] = {
+		{ "help",	no_argument,	NULL, 'h' },
+		{ NULL }
+	};
+	static const char *helpstr[] = {
+		"This info",
+		NULL
+	};
+
+	for (;;) {
+		int curr_optind = optind;
+		int c = getopt_long(argc, argv, "+h", longopts, NULL);
+		if (c == -1)
+			break;
+		switch (c) {
+		case 'h':
+			subcmd_help(" <vmlinux> [<vmlinux> [...]]",
+				    longopts, helpstr);
+			return 0;
+		case '?':
+			subcmd_usage("Unknown option: %s\n", argv[curr_optind]);
+		}
+	}
+
+	while (optind < argc) {
+		rv = makedyn_one_exec(argv[optind]);
+		if (rv)
+			break;
+		optind++;
+	}
+
+	return rv;
 }
 
 static void
@@ -2206,7 +2545,7 @@ dumpmem(int argc, char *argv[])
 	}
 
 	dump_memory(buf, addr, size);
-	
+
 out:
 	if (fd != -1)
 		close(fd);
@@ -2437,13 +2776,19 @@ struct {
 	int (*handler)(int argc, char *argv[]);
 	const char *help;
 } subcommands[] = {
-	{ "topelf", topelf, "Convert /dev/mem to a physical "
-	  "elf file" },
-	{ "tovelf", tovelf, "Convert /dev/mem or a pelf file to a "
-	  "virtual elf file" },
+	{ "topelf", topelf, "Convert /dev/mem to a physical"
+	  " elf file" },
+	{ "tovelf", tovelf, "Convert /dev/mem or a pelf file to a"
+	  " virtual elf file" },
 	{ "dumpmem", dumpmem, "Dump raw memory in an elf or oldmem file" },
 	{ "virttophys", virttophys, "Convert a virtual address to a"
-	  "physical one" },
+	  " physical one" },
+	{ "addrandoff", addrandomoffset, "Calculate the load offset of a"
+	  " randomized base kernel and create an auxv entry so gdb can"
+	  " debug it with symbols." },
+	{ "makedyn", makedyn, "Set a vmlinux file to by dynamically"
+	  " executable so that gdb will load the random offset for a"
+	  " randomized base kernel" },
 	{ NULL }
 };
 

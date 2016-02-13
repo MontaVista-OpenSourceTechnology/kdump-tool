@@ -104,6 +104,12 @@ void elfc_settype(struct elfc *e, GElf_Half type);
 GElf_Half elfc_gettype(struct elfc *e);
 
 /*
+ * Return the entry point in the ELF header.
+ */
+void elfc_setentry(struct elfc *e, GElf_Addr entry);
+GElf_Addr elfc_getentry(struct elfc *e);
+
+/*
  * Access the elf class for the file.  This is set by elfc_setup() to
  * the class of the machine it is running on.
  */
@@ -462,11 +468,18 @@ int elfc_get_num_notes(struct elfc *e);
  * into the actual internal data, but you shouldn't change them.
  * The name is '\0' terminated for convenience, but the termination
  * is after namelen.
+ * Returns -1 on error, use elfc_get_errno() to get the errno.
  */
 int elfc_get_note(struct elfc *e, int index,
 		  GElf_Word *type,
 		  const char **name, size_t *namelen,
 		  const void **data, size_t *datalen);
+
+/*
+ * Delete the given note.
+ * Returns -1 on error, use elfc_get_errno() to get the errno.
+ */
+int elfc_del_note(struct elfc *e, int index);
 
 /*
  * Return the total size of all the headers.
@@ -594,5 +607,62 @@ int elfc_pmem_file_offset(struct elfc *e, GElf_Addr addr, size_t len,
  * the last phdr.
  */
 GElf_Off elfc_file_size(struct elfc *e);
+
+/*
+ * Lookup the symbol (starting at the given startidx + 1) and search for
+ * the given symbol, returning it in "sym".
+ * Returns -1 on error, use elfc_get_errno() for the errno.
+ */
+int elfc_lookup_sym(struct elfc *e, const char *name, GElf_Sym *sym,
+		    Elf32_Word startidx, Elf32_Word *symidx);
+
+/*
+ * Return the size of a single elf symbols in the file (either
+ * sizeof(Elf32_Sym) or sizeof(Elf64_Sym).
+ */
+Elf32_Word elfc_sym_size_one(struct elfc *e);
+
+/*
+ * The number of symbols in the file.
+ */
+Elf32_Word elfc_num_syms(struct elfc *e);
+
+/*
+ * Lookup the symbol at the given index and return it in "sym".
+ * Returns -1 on error, use elfc_get_errno() for the errno.
+ */
+int elfc_get_sym(struct elfc *e, Elf32_Word index, GElf_Sym *sym);
+
+/*
+ * Replace the contents of a sym index with the given sym data.
+ * Returns -1 on error, use elfc_get_errno() for the errno.
+ */
+int elfc_set_sym(struct elfc *e, Elf32_Word index, GElf_Sym *sym);
+
+/*
+ * Lookup the symbol name at the given index and return it.
+ * Same rules as elfc_get_str().
+ * Returns NULL on error, use elfc_get_errno() for the errno.
+ */
+const char *elfc_get_sym_name(struct elfc *e, Elf32_Word index);
+
+/*
+ * Get a string from the section header string table given it's index.
+ * The return value should not be free or modified and will go away.
+ * if the elfc structure is freed.
+ *
+ * If NULL Is returned, use elfc_get_errno to get the errno.
+ */
+const char *elfc_get_shstr(struct elfc *e, Elf32_Word index);
+
+/*
+ * Get a string from the symbol string table given it's index.  The
+ * return value should not be free or modified and will go away.  if
+ * the elfc structure is freed.
+ *
+ * If NULL Is returned, use elfc_get_errno to get the errno.
+ */
+const char *elfc_get_str(struct elfc *e, Elf32_Word index);
+
 
 #endif /* MY_ELFHND_H */
