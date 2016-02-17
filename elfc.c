@@ -1206,7 +1206,7 @@ static int elfendian =
 static int elfclass = ELFCLASSNONE;
 
 #define elfc_getput(type, len)				\
-static GElf_ ## type						\
+GElf_ ## type						\
 elfc_get ## type(struct elfc *e, GElf_## type w)	\
 {							\
 	if (e->hdr.e_ident[EI_DATA] == ELFDATA2LSB)	\
@@ -1214,7 +1214,7 @@ elfc_get ## type(struct elfc *e, GElf_## type w)	\
 	else						\
 		return be ## len ## toh(w);		\
 }							\
-static GElf_ ## type						\
+GElf_ ## type						\
 elfc_put ## type(struct elfc *e, GElf_## type w)	\
 {							\
 	if (e->hdr.e_ident[EI_DATA] == ELFDATA2LSB)	\
@@ -1228,68 +1228,40 @@ elfc_getput(Word, 32)
 elfc_getput(Xword, 64)
 elfc_getput(Section, 16)
 
-static GElf_Addr
+GElf_Addr
 elfc_getAddr(struct elfc *e, GElf_Addr w)
 {
-	if (e->hdr.e_ident[EI_CLASS] == ELFCLASS32) {
-		if (e->hdr.e_ident[EI_DATA] == ELFDATA2LSB)
-			return elfc_getWord(e, w);
-		else
-			return elfc_getWord(e, w);
-	} else {
-		if (e->hdr.e_ident[EI_DATA] == ELFDATA2LSB)
-			return elfc_getXword(e, w);
-		else
-			return elfc_getXword(e, w);
-	}
+	if (e->hdr.e_ident[EI_CLASS] == ELFCLASS32)
+		return elfc_getWord(e, w);
+	else
+		return elfc_getXword(e, w);
 }
 
-static GElf_Off
+GElf_Off
 elfc_getOff(struct elfc *e, GElf_Off w)
 {
-	if (e->hdr.e_ident[EI_CLASS] == ELFCLASS32) {
-		if (e->hdr.e_ident[EI_DATA] == ELFDATA2LSB)
-			return elfc_getWord(e, w);
-		else
-			return elfc_getWord(e, w);
-	} else {
-		if (e->hdr.e_ident[EI_DATA] == ELFDATA2LSB)
-			return elfc_getXword(e, w);
-		else
-			return elfc_getXword(e, w);
-	}
+	if (e->hdr.e_ident[EI_CLASS] == ELFCLASS32)
+		return elfc_getWord(e, w);
+	else
+		return elfc_getXword(e, w);
 }
 
-static GElf_Addr
+GElf_Addr
 elfc_putAddr(struct elfc *e, GElf_Addr w)
 {
-	if (e->hdr.e_ident[EI_CLASS] == ELFCLASS32) {
-		if (e->hdr.e_ident[EI_DATA] == ELFDATA2LSB)
-			return elfc_putWord(e, w);
-		else
-			return elfc_putWord(e, w);
-	} else {
-		if (e->hdr.e_ident[EI_DATA] == ELFDATA2LSB)
-			return elfc_putXword(e, w);
-		else
-			return elfc_putXword(e, w);
-	}
+	if (e->hdr.e_ident[EI_CLASS] == ELFCLASS32)
+		return elfc_putWord(e, w);
+	else
+		return elfc_putXword(e, w);
 }
 
-static GElf_Off
+GElf_Off
 elfc_putOff(struct elfc *e, GElf_Off w)
 {
-	if (e->hdr.e_ident[EI_CLASS] == ELFCLASS32) {
-		if (e->hdr.e_ident[EI_DATA] == ELFDATA2LSB)
-			return elfc_putWord(e, w);
-		else
-			return elfc_putWord(e, w);
-	} else {
-		if (e->hdr.e_ident[EI_DATA] == ELFDATA2LSB)
-			return elfc_putXword(e, w);
-		else
-			return elfc_putXword(e, w);
-	}
+	if (e->hdr.e_ident[EI_CLASS] == ELFCLASS32)
+		return elfc_putWord(e, w);
+	else
+		return elfc_putXword(e, w);
 }
 
 unsigned char
@@ -2355,6 +2327,7 @@ elfc_read_shdrs(struct elfc *e)
 			e->eerrno = ENOMEM;
 			return -1;
 		}
+		e->shdrs[i].data = NULL;
 		e->shdrs[i].pre_write = elfc_shdr_tmpfile_pre_write;
 		e->shdrs[i].do_write = elfc_shdr_tmpfile_do_write;
 		e->shdrs[i].post_write = elfc_shdr_tmpfile_post_write;
@@ -2646,7 +2619,7 @@ read_elf32_sym_name(struct elfc *e, struct elfc_shdr *symsect,
 	sym = symsect->data;
 	sym += index;
 
-	return sym->st_name;
+	return elfc_getWord(e, sym->st_name);
 }
 
 static int
@@ -2658,7 +2631,7 @@ read_elf64_sym_name(struct elfc *e, struct elfc_shdr *symsect,
 	sym = symsect->data;
 	sym += index;
 
-	return sym->st_name;
+	return elfc_getWord(e, sym->st_name);
 }
 
 const char *

@@ -1806,14 +1806,14 @@ add_auxv(struct elfc *e, const char *vmlinux, GElf_Addr dyn_stext)
 	if (elfclass == ELFCLASS32) {
 		Elf32_auxv_t auxv;
 
-		auxv.a_type = AT_ENTRY;
-		auxv.a_un.a_val = dyn_entry;
+		auxv.a_type = elfc_putAddr(e, AT_ENTRY);
+		auxv.a_un.a_val = elfc_putAddr(e, dyn_entry);
 		rv = elfc_add_note(e, NT_AUXV, "CORE", 5, &auxv, sizeof(auxv));
 	} else if (elfclass == ELFCLASS64) {
 		Elf64_auxv_t auxv;
 
-		auxv.a_type = AT_ENTRY;
-		auxv.a_un.a_val = dyn_entry;
+		auxv.a_type = elfc_putAddr(e, AT_ENTRY);
+		auxv.a_un.a_val = elfc_putAddr(e, dyn_entry);
 		rv = elfc_add_note(e, NT_AUXV, "CORE", 5, &auxv, sizeof(auxv));
 	} else {
 		fprintf(stderr, "Unknown elfclass?: %d\n", elfclass);

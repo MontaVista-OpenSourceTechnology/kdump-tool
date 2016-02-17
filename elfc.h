@@ -664,5 +664,23 @@ const char *elfc_get_shstr(struct elfc *e, Elf32_Word index);
  */
 const char *elfc_get_str(struct elfc *e, Elf32_Word index);
 
+/*
+ * Various routines to convert between target order and host order.
+ */
+GElf_Half elfc_getHalf(struct elfc *e, GElf_Half w);
+GElf_Half elfc_putHalf(struct elfc *e, GElf_Half w);
+GElf_Word elfc_getWord(struct elfc *e, GElf_Word w);
+GElf_Word elfc_putWord(struct elfc *e, GElf_Word w);
+GElf_Xword elfc_getXword(struct elfc *e, GElf_Xword w);
+GElf_Xword elfc_putXword(struct elfc *e, GElf_Xword w);
+GElf_Section elfc_getSection(struct elfc *e, GElf_Section w);
+GElf_Section elfc_putSection(struct elfc *e, GElf_Section w);
+GElf_Addr elfc_getAddr(struct elfc *e, GElf_Addr w);
+GElf_Addr elfc_putAddr(struct elfc *e, GElf_Addr w);
+GElf_Off elfc_getOff(struct elfc *e, GElf_Off w);
+GElf_Off elfc_putOff(struct elfc *e, GElf_Off w);
+unsigned char elfc_getuchar(struct elfc *e, unsigned char w);
+unsigned char elfc_putuchar(struct elfc *e, unsigned char w);
+
 
 #endif /* MY_ELFHND_H */
