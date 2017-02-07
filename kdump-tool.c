@@ -2329,7 +2329,7 @@ out_err:
 static int
 makedyn(int argc, char *argv[])
 {
-	int rv;
+	int rv = 0;
 	static struct option longopts[] = {
 		{ "help",	no_argument,	NULL, 'h' },
 		{ NULL }
