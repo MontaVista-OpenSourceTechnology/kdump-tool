@@ -59,7 +59,7 @@ enum vmcoreinfo_labels {
 	VMCI_SIZE_list_head,
 	VMCI_ADDRESS__text,
 	VMCI_ADDRESS__end,
-	VMCI_ADDRESS__phys_to_kernel_offset,
+	VMCI_ADDRESS_phys_to_kernel_offset,
 	VMCI_ADDRESS_CKSEG0,
 	VMCI_ADDRESS_CKSSEG,
 	VMCI_ADDRESS_PHYS_OFFSET,
@@ -566,7 +566,7 @@ mips_arch_setup(struct elfc *pelf, struct kdt_data *d, void **arch_data)
 		VMCI_SIZE(list_head),
 		VMCI_ADDRESS(_text),
 		VMCI_ADDRESS(_end),
-		VMCI_ADDRESS(_phys_to_kernel_offset),
+		VMCI_ADDRESS(phys_to_kernel_offset),
 		VMCI_ADDRESS(CKSEG0),
 		VMCI_ADDRESS(CKSSEG),
 		VMCI_ADDRESS(PAGE_OFFSET),
@@ -657,7 +657,7 @@ mips_arch_setup(struct elfc *pelf, struct kdt_data *d, void **arch_data)
 	if (mwd->is_64bit) {
 		i = vmci[VMCI_ADDRESS__text].found +
 			vmci[VMCI_ADDRESS__end].found +
-			vmci[VMCI_ADDRESS__phys_to_kernel_offset].found;
+			vmci[VMCI_ADDRESS_phys_to_kernel_offset].found;
 		if (i != 0) {
 			if (i != 3) {
 				fprintf(stderr, "All of _text, _end, and"
@@ -667,7 +667,7 @@ mips_arch_setup(struct elfc *pelf, struct kdt_data *d, void **arch_data)
 			mwd->_text = vmci[VMCI_ADDRESS__text].val;
 			mwd->_end = vmci[VMCI_ADDRESS__end].val;
 			mwd->phys_to_kernel_offset =
-				vmci[VMCI_ADDRESS__phys_to_kernel_offset].val;
+				vmci[VMCI_ADDRESS_phys_to_kernel_offset].val;
 			mwd->mapped_kernel = 1;
 		} else
 			mwd->mapped_kernel = 0;
