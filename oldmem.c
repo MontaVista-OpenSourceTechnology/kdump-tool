@@ -444,6 +444,8 @@ struct kd_elf_siginfo
 };
 
 typedef int32_t kd_pid_t;
+typedef struct { int32_t tv_sec; int32_t tv_usec; } kd_timeval32_t;
+typedef struct { int64_t tv_sec; int64_t tv_usec; } kd_timeval64_t;
 
 struct kd_elf_prstatus32
 {
@@ -452,6 +454,14 @@ struct kd_elf_prstatus32
 	uint32_t pr_sigpend;
 	uint32_t pr_sighold;
 	kd_pid_t pr_pid;
+	kd_pid_t pr_ppid;
+	kd_pid_t pr_pgrp;
+	kd_pid_t pr_sid;
+	kd_timeval32_t pr_utime;
+	kd_timeval32_t pr_stime;
+	kd_timeval32_t pr_cutime;
+	kd_timeval32_t pr_cstime;
+	unsigned char pr_regs[1];
 };
 
 struct kd_elf_prstatus64
@@ -461,6 +471,14 @@ struct kd_elf_prstatus64
 	uint64_t pr_sigpend;
 	uint64_t pr_sighold;
 	kd_pid_t pr_pid;
+	kd_pid_t pr_ppid;
+	kd_pid_t pr_pgrp;
+	kd_pid_t pr_sid;
+	kd_timeval64_t pr_utime;
+	kd_timeval64_t pr_stime;
+	kd_timeval64_t pr_cutime;
+	kd_timeval64_t pr_cstime;
+	unsigned char pr_regs[1];
 };
 
 struct fixup_reg_info
