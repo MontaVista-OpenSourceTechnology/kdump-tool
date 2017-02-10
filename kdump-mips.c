@@ -31,6 +31,15 @@
  *  Software Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
+/*
+ * How MIPS memory is laid out in Linux
+ *
+ * Just a note: This is complicated.
+ *
+ * FIXME: Fill this in.
+ *
+ */
+
 #include "kdump-tool.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -39,7 +48,7 @@
 
 #include "elfc.h"
 
-#define ENTRIES_PER_PGTAB(d, type, pgtab_size)				\
+#define ENTRIES_PER_PGTAB(mwd, type, pgtab_size)			\
 	((1 << mwd->type ##_order) * (1 << mwd->page_shift) / (pgtab_size))
 
 #define MAX_SHIFT 16
@@ -125,13 +134,22 @@ typedef int (*walk_mips)(struct elfc *pelf, const struct mips_walk_data *mwd,
 			 GElf_Addr begin_addr, GElf_Addr end_addr,
 			 handle_page_f handle_page, void *userdata);
 
+static int
+addr_range_covered(GElf_Addr start, GElf_Addr end,
+		   GElf_Addr r_start, GElf_Addr r_end)
+{
+	return (((start <= r_start) && (end > r_start)) ||
+		((start <= r_end) && (end >= r_end)) ||
+		((start >= r_start) && (end <= r_end)));
+}
+
 /*
  * Scan a defined range of memory from r_start to r_end.  If some or all of
  * the range from begin_addr to end_addr is in the defined range, call page
  * table handlers on it.  After done, adjust begin_addr and end_addr to
  * remove the range we just scanned, if necessary.
  *
- * Returns -1 on error, 0 if the caller shouldkeep going, 1 if the caller
+ * Returns -1 on error, 0 if the caller should keep going, 1 if the caller
  * should return success immediately.
  */
 static int
@@ -142,13 +160,10 @@ scan_range(struct elfc *pelf, const struct mips_walk_data *mwd,
 	   handle_page_f handle_page, void *userdata,
 	   walk_mips walk)
 {
-	int rv;
+	int rv = 0;
 	uint64_t start, end, addr;
 
-	if (((*begin_addr <= r_start) && (*end_addr >= r_start)) ||
-	    ((*begin_addr <= r_end) && (*end_addr >= r_end)) ||
-	    ((*begin_addr > r_start) && (*end_addr < r_end)))
-	{
+	if (addr_range_covered(*begin_addr, *end_addr, r_start, r_end)) {
 		start = *begin_addr;
 		if (start < r_start)
 			start = r_start;
@@ -169,31 +184,34 @@ scan_range(struct elfc *pelf, const struct mips_walk_data *mwd,
 					 addr,
 					 1 << mwd->page_shift, userdata);
 			if (rv == -1)
-				return -1;
+				goto out;
 		}
 
-		if ((*begin_addr >= r_start) && (*end_addr <= r_end))
+		if ((*begin_addr >= r_start) && (*end_addr <= r_end)) {
 			/* Region was completely inside text */
-			return 1;
-		else if ((*begin_addr < r_start) && (*end_addr > r_end)) {
+			rv = 1;
+			goto out;
+		} else if ((*begin_addr < r_start) && (*end_addr > r_end)) {
 			/* Region overlaps, have to do two ranges. */
 			rv = walk(pelf, mwd, pgdaddr,
 				  *begin_addr, r_start - 1,
 				  handle_page, userdata);
 			if (rv != -1)
 				rv = walk(pelf, mwd, pgdaddr,
-					  r_end, *end_addr,
+					  r_end + 1, *end_addr,
 					  handle_page, userdata);
 			if (rv == -1)
-				return -1;
-			return 1;
+				goto out;
+			rv = 1;
+			goto out;
 		} else if (*begin_addr < r_start)
 			*end_addr = r_start - 1;
 		else if (*end_addr > r_end)
 			*begin_addr = r_end + 1;
 	}
 
-	return 0;
+out:
+	return rv;
 }
 
 static int
@@ -203,7 +221,7 @@ handle_32pte(struct elfc *pelf, const struct mips_walk_data *mwd,
 	     handle_page_f handle_page, void *userdata)
 {
 	uint32_t pte[MAX_PGTAB_ENTRIES(sizeof(uint32_t))];
-	int pte_count = ENTRIES_PER_PGTAB(d, pte, sizeof(uint32_t));
+	int pte_count = ENTRIES_PER_PGTAB(mwd, pte, sizeof(uint32_t));
 	int i;
 	int rv;
 	uint32_t start = begin_addr >> mwd->page_shift;
@@ -246,7 +264,7 @@ handle_32pmd(struct elfc *pelf, const struct mips_walk_data *mwd,
 	     handle_page_f handle_page, void *userdata)
 {
 	uint32_t pmd[MAX_PGTAB_ENTRIES(sizeof(uint32_t))];
-	int pmd_count = ENTRIES_PER_PGTAB(d, pmd, sizeof(uint32_t));
+	int pmd_count = ENTRIES_PER_PGTAB(mwd, pmd, sizeof(uint32_t));
 	int i;
 	int rv;
 	uint32_t start = begin_addr >> mwd->pmd_shift;
@@ -288,7 +306,7 @@ walk_mips32(struct elfc *pelf, const struct mips_walk_data *mwd,
 	    handle_page_f handle_page, void *userdata)
 {
 	uint32_t pgd[MAX_PGTAB_ENTRIES(sizeof(uint32_t))];
-	int pgd_count = ENTRIES_PER_PGTAB(d, pgd, sizeof(uint32_t));
+	int pgd_count = ENTRIES_PER_PGTAB(mwd, pgd, sizeof(uint32_t));
 	int i;
 	int rv;
 	GElf_Addr maxaddr;
@@ -376,12 +394,12 @@ mips_virt_to_phys64(const struct mips_walk_data *mwd,
 
 static int
 handle_64pte(struct elfc *pelf, const struct mips_walk_data *mwd,
-	     GElf_Addr vaddr, GElf_Addr pteaddr,
+	     GElf_Addr topbits, GElf_Addr vaddr, GElf_Addr pteaddr,
 	     GElf_Addr begin_addr, GElf_Addr end_addr,
 	     handle_page_f handle_page, void *userdata)
 {
 	uint64_t pte[MAX_PGTAB_ENTRIES(sizeof(uint64_t))];
-	int pte_count = ENTRIES_PER_PGTAB(d, pte, sizeof(uint64_t));
+	int pte_count = ENTRIES_PER_PGTAB(mwd, pte, sizeof(uint64_t));
 	int i;
 	int rv;
 	uint64_t start = begin_addr >> mwd->page_shift;
@@ -389,6 +407,7 @@ handle_64pte(struct elfc *pelf, const struct mips_walk_data *mwd,
 
 	begin_addr &= ADDR64_MASK(mwd->page_shift);
 	end_addr &= ADDR64_MASK(mwd->page_shift);
+
 	rv = elfc_read_pmem(pelf, pteaddr, pte,
 			    pte_count * sizeof(uint64_t));
 	if (rv == -1) {
@@ -408,9 +427,9 @@ handle_64pte(struct elfc *pelf, const struct mips_walk_data *mwd,
 			continue;
 
 		rv = handle_page(pelf,
-				 lpte >> mwd->pfn_shift << mwd->page_shift,
-				 vaddr | ((GElf_Addr) i) << mwd->page_shift,
-				 1 << mwd->page_shift, userdata);
+			lpte >> mwd->pfn_shift << mwd->page_shift,
+			topbits | vaddr | ((GElf_Addr) i) << mwd->page_shift,
+			1 << mwd->page_shift, userdata);
 		if (rv == -1)
 			return -1;
 	}
@@ -419,12 +438,12 @@ handle_64pte(struct elfc *pelf, const struct mips_walk_data *mwd,
 
 static int
 handle_64pmd(struct elfc *pelf, const struct mips_walk_data *mwd,
-	     GElf_Addr vaddr, GElf_Addr pmdaddr,
+	     GElf_Addr topbits, GElf_Addr vaddr, GElf_Addr pmdaddr,
 	     GElf_Addr begin_addr, GElf_Addr end_addr,
 	     handle_page_f handle_page, void *userdata)
 {
 	uint64_t pmd[MAX_PGTAB_ENTRIES(sizeof(uint64_t))];
-	int pmd_count = ENTRIES_PER_PGTAB(d, pmd, sizeof(uint64_t));
+	int pmd_count = ENTRIES_PER_PGTAB(mwd, pmd, sizeof(uint64_t));
 	unsigned int i;
 	int rv;
 	uint64_t start = begin_addr >> mwd->pmd_shift;
@@ -451,16 +470,17 @@ handle_64pmd(struct elfc *pelf, const struct mips_walk_data *mwd,
 		if ((lpmd & mwd->_PAGE_HUGE) &&
 		    (lpmd & mwd->page_present_mask)) {
 			rv = handle_page(pelf,
-				 lpmd >> mwd->pfn_shift << mwd->page_shift,
-				 vaddr | ((GElf_Addr) i) << mwd->pmd_shift,
-				 1 << mwd->pmd_shift, userdata);
+				lpmd >> mwd->pfn_shift << mwd->page_shift,
+				(topbits | vaddr |
+				 ((GElf_Addr) i) << mwd->pmd_shift),
+				1 << mwd->pmd_shift, userdata);
 			if (rv == -1)
 				return -1;
 		}
 		if (mips_virt_to_phys64(mwd, pmdaddr, i, lpmd, &lpmd) == -1)
 			continue;
 
-		rv = handle_64pte(pelf, mwd,
+		rv = handle_64pte(pelf, mwd, topbits,
 				  vaddr | ((GElf_Addr) i) << mwd->pmd_shift,
 				  lpmd, begin_addr, end_addr,
 				  handle_page, userdata);
@@ -477,10 +497,10 @@ walk_mips64(struct elfc *pelf, const struct mips_walk_data *mwd,
 	    handle_page_f handle_page, void *userdata)
 {
 	uint64_t pgd[MAX_PGTAB_ENTRIES(sizeof(uint64_t))];
-	int pgd_count = ENTRIES_PER_PGTAB(d, pgd, sizeof(uint64_t));
+	int pgd_count = ENTRIES_PER_PGTAB(mwd, pgd, sizeof(uint64_t));
 	unsigned int i;
-	int rv;
-	GElf_Addr maxaddr;
+	int rv = 0;
+	GElf_Addr maxaddr, topbits = 0;
 	uint64_t start, end;
 
 	/*
@@ -494,10 +514,8 @@ walk_mips64(struct elfc *pelf, const struct mips_walk_data *mwd,
 				&begin_addr, &end_addr,
 				mwd->_text, mwd->_end - 1,
 				handle_page, userdata, walk_mips64);
-		if (rv == -1)
-			return rv;
-		if (rv == 1)
-			return 0;
+		if (rv)
+			goto out;
 	}
 
 	maxaddr = elfc_max_paddr(pelf);
@@ -505,10 +523,8 @@ walk_mips64(struct elfc *pelf, const struct mips_walk_data *mwd,
 			&begin_addr, &end_addr,
 			mwd->PAGE_OFFSET, mwd->PAGE_OFFSET + maxaddr - 1,
 			handle_page, userdata, walk_mips64);
-	if (rv == -1)
-		return rv;
-	if (rv == 1)
-		return 0;
+	if (rv)
+		goto out;
 
 	if (maxaddr > 0x20000000)
 		maxaddr = 0x20000000;
@@ -516,10 +532,8 @@ walk_mips64(struct elfc *pelf, const struct mips_walk_data *mwd,
 			&begin_addr, &end_addr,
 			mwd->CKSEG0, mwd->CKSEG0 + maxaddr - 1,
 			handle_page, userdata, walk_mips64);
-	if (rv == -1)
-		return rv;
-	if (rv == 1)
-		return 0;
+	if (rv)
+		goto out;
 
 	/* Now do the page tables. */
 	rv = elfc_read_pmem(pelf, pgdaddr, pgd,
@@ -528,13 +542,38 @@ walk_mips64(struct elfc *pelf, const struct mips_walk_data *mwd,
 		fprintf(stderr, "Unable to read page directory at"
 			" %llx: %s\n", (unsigned long long) pgdaddr,
 			strerror(elfc_get_errno(pelf)));
-		return -1;
+		goto out;
 	}
 
-	start = begin_addr >> mwd->pgd_shift;
-	end = end_addr >> mwd->pgd_shift;
+	start = begin_addr;
+	end = end_addr;
+	if (addr_range_covered(begin_addr, end_addr,
+			       mwd->CKSSEG, mwd->CKSSEG + 0x20000000 - 1))
+	{
+		/* At least partially in CKSSEG */
+		if (begin_addr < mwd->CKSSEG) {
+			rv = walk_mips64(pelf, mwd, pgdaddr,
+					 begin_addr, mwd->CKSSEG - 1,
+					 handle_page, userdata);
+			begin_addr = mwd->CKSSEG;
+		}
+		if (end_addr > mwd->CKSSEG + 0x20000000) {
+			rv = walk_mips64(pelf, mwd, pgdaddr,
+					 mwd->CKSSEG + 0x20000000, end_addr,
+					 handle_page, userdata);
+			end_addr = mwd->CKSSEG + 0x20000000 - 1;
+		}
+		start = begin_addr & 0xffffffffffULL;
+		end = end_addr & 0xffffffffffULL;
+		topbits = ~0xffffffffffULL;
+	}
+	start >>= mwd->pgd_shift;
+	end >>= mwd->pgd_shift;
 	if (end < (pgd_count - 1))
 		pgd_count = end + 1;
+
+	begin_addr &= ADDR64_MASK(mwd->pgd_shift);
+	end_addr &= ADDR64_MASK(mwd->pgd_shift);
 
 	for (i = start; i < pgd_count; i++) {
 		GElf_Addr lpgd = mwd->conv64(&pgd[i]);
@@ -543,18 +582,24 @@ walk_mips64(struct elfc *pelf, const struct mips_walk_data *mwd,
 			continue;
 
 		if (mwd->pmd_present)
-			rv = handle_64pmd(pelf, mwd,
+			rv = handle_64pmd(pelf, mwd, topbits,
 					  ((GElf_Addr) i) << mwd->pgd_shift,
 					  lpgd, begin_addr, end_addr,
 					  handle_page, userdata);
 		else
-			rv = handle_64pte(pelf, mwd,
+			rv = handle_64pte(pelf, mwd, topbits,
 					  ((GElf_Addr) i) << mwd->pgd_shift,
 					  lpgd, begin_addr, end_addr,
 					  handle_page, userdata);
 		if (rv == -1)
-			return -1;
+			goto out;
 	}
+
+out:
+	if (rv == -1)
+		return rv;
+	if (rv == 1)
+		return 0;
 	return 0;
 }
 
