@@ -1,4 +1,4 @@
-From 9d2d53ad1136cd17ab5ec94bc969d41d769e870f Mon Sep 17 00:00:00 2001
+From 8571ddae8104618f750543fe99cbacff95b2c07e Mon Sep 17 00:00:00 2001
 From: Corey Minyard <cminyard@mvista.com>
 Date: Fri, 10 Feb 2017 22:39:16 -0600
 Subject: [PATCH] MIPS:kdump: Add some more symbols
@@ -6,28 +6,38 @@ Subject: [PATCH] MIPS:kdump: Add some more symbols
 Support for 4-level page tables and 48-bit address spaces is coming.
 Add symbols so these can be detected and handled properly.
 
+Also, we need to include asm/sections.h to get _text and _end.
+
 Signed-off-by: Corey Minyard <cminyard@mvista.com>
 ---
- arch/mips/kernel/machine_kexec.c | 7 ++++++-
- 1 file changed, 6 insertions(+), 1 deletion(-)
+ arch/mips/kernel/machine_kexec.c | 8 +++++++-
+ 1 file changed, 7 insertions(+), 1 deletion(-)
 
 diff --git a/arch/mips/kernel/machine_kexec.c b/arch/mips/kernel/machine_kexec.c
-index 299ed22..2b17b38 100644
+index 299ed22..a801c22 100644
 --- a/arch/mips/kernel/machine_kexec.c
 +++ b/arch/mips/kernel/machine_kexec.c
-@@ -118,7 +118,10 @@ void arch_crash_save_vmcoreinfo(void)
+@@ -13,6 +13,7 @@
+ #include <asm/cacheflush.h>
+ #include <asm/page.h>
+ #include <asm/pgtable.h>
++#include <asm/sections.h> /* for _text, _end */
+ 
+ extern const unsigned char relocate_new_kernel[];
+ extern const size_t relocate_new_kernel_size;
+@@ -118,7 +119,10 @@ void arch_crash_save_vmcoreinfo(void)
  {
  	VMCOREINFO_NUMBER(PAGE_SHIFT);
  	VMCOREINFO_NUMBER(PGD_ORDER);
 -#if defined(CONFIG_32BIT) || !defined(CONFIG_PAGE_SIZE_64KB)
-+#if !defined(__PGTABLE_PUD_FOLDED)
++#if !defined(__PAGETABLE_PUD_FOLDED)
 +	VMCOREINFO_NUMBER(PUD_ORDER);
 +#endif
-+#if !defined(__PGTABLE_PMD_FOLDED)
++#if !defined(__PAGETABLE_PMD_FOLDED)
  	VMCOREINFO_NUMBER(PMD_ORDER);
  #endif
  	VMCOREINFO_NUMBER(PTE_ORDER);
-@@ -127,6 +130,7 @@ void arch_crash_save_vmcoreinfo(void)
+@@ -127,6 +131,7 @@ void arch_crash_save_vmcoreinfo(void)
  	VMCOREINFO_NUMBER(_PAGE_HUGE);
  #endif
  #ifdef CONFIG_64BIT
@@ -35,7 +45,7 @@ index 299ed22..2b17b38 100644
  #ifdef CONFIG_MAPPED_KERNEL
  	VMCOREINFO_ADDRESS(_text);
  	VMCOREINFO_ADDRESS(_end);
-@@ -140,5 +144,6 @@ void arch_crash_save_vmcoreinfo(void)
+@@ -140,5 +145,6 @@ void arch_crash_save_vmcoreinfo(void)
  
  	VMCOREINFO_ADDRESS(PAGE_OFFSET);
  	VMCOREINFO_ADDRESS(IO_BASE);

@@ -359,8 +359,7 @@ ppc32_walk(struct elfc *pelf, GElf_Addr pgdaddr,
 	}
 
 	vaddr = begin_addr;
-	do {
-
+	while (vaddr && vaddr < end_addr) {
 		if (linear_mapped_vaddr(md, vaddr)) {
 			psize = md->pagesize;
 			vaddr &= ~(psize - 1);
@@ -460,7 +459,7 @@ ready:
 
 		vaddr += psize;
 
-	} while (vaddr && vaddr < end_addr);
+	}
 
 	return 0;
 }
