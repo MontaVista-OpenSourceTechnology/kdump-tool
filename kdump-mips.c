@@ -36,8 +36,103 @@
  *
  * Just a note: This is complicated.
  *
- * FIXME: Fill this in.
+ * Unlike most other processors, MIPS does not have a hardware page table
+ * loader.  Instead, software can load the TLBs directly, so a page fault
+ * on a valid memory address requires some software to load the TLB before
+ * the memory access can be done.  This means that a lot about the MIPS
+ * system is flexible.  Linux makes extreme use of this flexibility,
+ * there are all kinds of page table sizes and options.
  *
+ * 64-bit
+ *
+ * Memory is divided into 8 sections:
+ *
+ *  XKUSEG 0x0000000000000000
+ *    This is where userspace lives.
+ *
+ *  XKSSEG 0x4000000000000000
+ *    I have no idea what this range does.
+ *
+ *  XKPHYS 0x8000000000000000
+ *    This is a physical 1-1 map of memory.  This is done in hardware and
+ *    no TLBs are required.
+ *
+ *  XKSEG  0xc000000000000000
+ *    This is normally where vmalloc memory lives.  However, this depends
+ *    on configuration.
+ *
+ *  CKSEG0 0xffffffff80000000
+ *    The kernel and it's data normally go into this area.
+ *
+ *  CKSEG1 0xffffffffa0000000
+ *    I think I/O lives in this area
+ *
+ *  CKSSEG 0xffffffffc0000000
+ *    This is where module memory lives
+ *
+ *  CKSEG3 0xffffffffe0000000
+ *    I can't find any use for this memory.
+ *
+ * The system actually has a separate page table for kernel and userland.
+ * The kernel page table is the page table owned by the swapper task
+ * (swapper_pg_dir), although you can pick any kernel thread for this.
+ * The page table for a userland process only has userland pages.
+ * The page table refill routines will look at the memory address,
+ * if it's less than XKSSEG, it uses the userland page tables,
+ * otherwise it uses the kernel page tables.
+ *
+ * vmalloc memory is simply an overlay over the kernel page table.
+ * The CKxxxx segments are also an overlay onto the kernel page
+ * table, though they obviously start at CKSEG0.
+ *
+ * As an example, suppose we have a standard 4K page with a 40-bit
+ * memory space. 0x000000ffffffffff is 40 bits.  This means that
+ * 0xffffffffc0000000 and 0xc0000000c0000000 point to the same
+ * physical page.
+ *
+ * Cavium has added support for a 48-bit memory space with
+ * CONFIG_MIPS_VA_BITS_48.
+ *
+ * Page tables can be two, three, or four levels.  The four levels are:
+ *   pgd (always present)
+ *   pud (only present for 48 bit address spaces on 4k and 8k pages)
+ *   pmd (present on everything but 64K pages without 48-bit address space)
+ *   pte (always present)
+ *
+ * The xxx_order of a page table gives how many pages a level takes, as
+ * a power of 2.  So 0 is 1 page, 1 is 2 pages, 2 is 4 pages, etc.
+ * For instance, with 4K pages and pgd_order is 1, then the pgd will
+ * take 8k of RAM (two pages) and have 1024 entries at that level
+ * (each page table entry is 8 bytes).  With 1024 entries, this covers
+ * 10 bits of address space.
+ *
+ * The xxx_shift of a page table give the number of bits below where
+ * the page table is.  In our 4k page configuration with 40 bits and
+ * pgd_order of 1, that means the number of bits below the pgd bits
+ * is 30, so pgd_shift is 30.
+ *
+ * arch/mips/include/asm/pgtable-64.h has a lot more information on this.
+ *
+ * By default the maximum address space for a task is 40 bits.  This is
+ * independent of the maximum bits the page tables can address, all
+ * standard page tables can address 40 bits or more.  This limit is
+ * set in arch/mips/include/processor.h, it's TASK_SIZE64.  With 48-bit
+ * address space, this is increased to 48-bits and page table sizes
+ * are adjusted appropriately.
+ *
+ * To use this, you take your address and chop off the bits above 40
+ * (or 48).  Then you take your number, shift it to the right pgd_shift
+ * bits, and use that to index the pgd, that entry in the pgd points
+ * to the pud (4-level page table), pmd (3-level page table), or pte
+ * (2-level page table).  If it's pud, then you remove the bits above
+ * pgd_shift and shift it to the right pud_shift, which gives you the
+ * pointer to the pmd entry.  And so forth, until you get to the pte,
+ * which gives you the pointer to the actual page.
+ *
+ * 32-bit
+ *
+ * This is not tested, I don't have access to a 32-bit target, and it's
+ * all theoretical at this point.
  */
 
 #include "kdump-tool.h"
