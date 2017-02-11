@@ -55,7 +55,9 @@
  *
  *  XKPHYS 0x8000000000000000
  *    This is a physical 1-1 map of memory.  This is done in hardware and
- *    no TLBs are required.
+ *    no TLBs are required.  On Cavium processors this is the base, on
+ *    other processors the map is in the area but at different locations.
+ *    See CAC_BASE in the MIPS include files.
  *
  *  XKSEG  0xc000000000000000
  *    This is normally where vmalloc memory lives.  However, this depends
@@ -73,13 +75,13 @@
  *  CKSEG3 0xffffffffe0000000
  *    I can't find any use for this memory.
  *
- * The system actually has a separate page table for kernel and userland.
- * The kernel page table is the page table owned by the swapper task
- * (swapper_pg_dir), although you can pick any kernel thread for this.
- * The page table for a userland process only has userland pages.
- * The page table refill routines will look at the memory address,
- * if it's less than XKSSEG, it uses the userland page tables,
- * otherwise it uses the kernel page tables.
+ * The system actually has a separate page table for kernel and
+ * userland.  The kernel page table is the page table owned by the
+ * init task, although you can pick any kernel thread for this.  The
+ * page table for a userland process only has userland pages.  The
+ * page table refill routines will look at the memory address, if it's
+ * less than XKSSEG, it uses the userland page tables, otherwise it
+ * uses the kernel page tables.
  *
  * vmalloc memory is simply an overlay over the kernel page table.
  * The CKxxxx segments are also an overlay onto the kernel page
@@ -168,8 +170,11 @@ enum vmcoreinfo_labels {
 	VMCI_ADDRESS_CKSSEG,
 	VMCI_ADDRESS_PHYS_OFFSET,
 	VMCI_NUMBER_PMD_ORDER,
+	VMCI_NUMBER_PUD_ORDER,
 	VMCI_NUMBER__PAGE_HUGE,
+	VMCI_NUMBER_TASK_SIZE64,
 	VMCI_ADDRESS_IO_BASE,
+	VMCI_ADDRESS_MAP_BASE,
 	/* Begin required elements. */
 #define VREQ	VMCI_NUMBER_PAGE_SHIFT
 	VMCI_NUMBER_PAGE_SHIFT,
@@ -177,6 +182,7 @@ enum vmcoreinfo_labels {
 	VMCI_NUMBER_PTE_ORDER,
 	VMCI_NUMBER__PAGE_PRESENT,
 	VMCI_NUMBER__PFN_SHIFT,
+	VMCI_ADDRESS_phys_pgd_ptr,
 	VMCI_ADDRESS_PAGE_OFFSET,
 	/* End actual elements. */
 	VMCI_NUM_ELEMENTS
@@ -187,6 +193,9 @@ struct mips_walk_data {
 	unsigned int page_size;
 	unsigned int pgd_order;
 	unsigned int pgd_shift;
+	int pud_present;
+	unsigned int pud_order;
+	unsigned int pud_shift;
 	int pmd_present;
 	unsigned int pmd_order;
 	unsigned int pmd_shift;
@@ -204,6 +213,9 @@ struct mips_walk_data {
 	uint64_t phys_to_kernel_offset;
 	int mapped_kernel;
 
+	uint64_t phys_pgd_ptr;
+
+	uint64_t TASK_SIZE64;
 	uint64_t _PAGE_HUGE;
 
 	uint64_t CKSEG0;
@@ -212,6 +224,7 @@ struct mips_walk_data {
 	uint64_t PAGE_OFFSET;
 	uint64_t PHYS_OFFSET;
 	uint64_t IO_BASE;
+	uint64_t MAP_BASE;
 };
 
 static int
@@ -586,6 +599,50 @@ handle_64pmd(struct elfc *pelf, const struct mips_walk_data *mwd,
 }
 
 static int
+handle_64pud(struct elfc *pelf, const struct mips_walk_data *mwd,
+	     GElf_Addr topbits, GElf_Addr vaddr, GElf_Addr pudaddr,
+	     GElf_Addr begin_addr, GElf_Addr end_addr,
+	     handle_page_f handle_page, void *userdata)
+{
+	uint64_t pud[MAX_PGTAB_ENTRIES(sizeof(uint64_t))];
+	int pud_count = ENTRIES_PER_PGTAB(mwd, pud, sizeof(uint64_t));
+	unsigned int i;
+	int rv;
+	uint64_t start = begin_addr >> mwd->pud_shift;
+	uint64_t end = end_addr >> mwd->pud_shift;
+
+	begin_addr &= ADDR64_MASK(mwd->pud_shift);
+	end_addr &= ADDR64_MASK(mwd->pud_shift);
+
+	rv = elfc_read_pmem(pelf, pudaddr, pud,
+			    pud_count * sizeof(uint64_t));
+	if (rv == -1) {
+		fprintf(stderr, "Unable to read page middle directory at"
+			" %llx: %s\n", (unsigned long long) pudaddr,
+			strerror(elfc_get_errno(pelf)));
+		return -1;
+	}
+
+	if (end < (pud_count - 1))
+		pud_count = end + 1;
+
+	for (i = start; i < pud_count; i++) {
+		GElf_Addr lpud = mwd->conv64(&pud[i]);
+
+		if (mips_virt_to_phys64(mwd, pudaddr, i, lpud, &lpud) == -1)
+			continue;
+
+		rv = handle_64pmd(pelf, mwd, topbits,
+				  vaddr | ((GElf_Addr) i) << mwd->pud_shift,
+				  lpud, begin_addr, end_addr,
+				  handle_page, userdata);
+		if (rv == -1)
+			return -1;
+	}
+	return 0;
+}
+
+static int
 walk_mips64(struct elfc *pelf, const struct mips_walk_data *mwd,
 	    GElf_Addr pgdaddr,
 	    GElf_Addr begin_addr, GElf_Addr end_addr,
@@ -595,8 +652,23 @@ walk_mips64(struct elfc *pelf, const struct mips_walk_data *mwd,
 	int pgd_count = ENTRIES_PER_PGTAB(mwd, pgd, sizeof(uint64_t));
 	unsigned int i;
 	int rv = 0;
-	GElf_Addr maxaddr, topbits = 0;
+	GElf_Addr maxaddr, topbits = 0, scan_start, scan_end;
 	uint64_t start, end;
+
+	if (pgdaddr != mwd->phys_pgd_ptr) {
+		/*
+		 * This is a request for a user page map, the user specified
+		 * a page that wasn't the kernel's map.  So only do user
+		 * addresses.
+		 */
+		if (addr_range_covered(begin_addr, end_addr, 0,
+				       mwd->TASK_SIZE64 - 1)) {
+			scan_start = 0;
+			scan_end = mwd->TASK_SIZE64 - 1;
+			goto page_scan_range;
+		}
+		return 0;
+	}
 
 	/*
 	 * Add the default page tables for iomem and kernel.
@@ -640,28 +712,48 @@ walk_mips64(struct elfc *pelf, const struct mips_walk_data *mwd,
 		goto out;
 	}
 
-	start = begin_addr;
-	end = end_addr;
 	if (addr_range_covered(begin_addr, end_addr,
-			       mwd->CKSSEG, mwd->CKSSEG + 0x20000000 - 1))
-	{
-		/* At least partially in CKSSEG */
-		if (begin_addr < mwd->CKSSEG) {
-			rv = walk_mips64(pelf, mwd, pgdaddr,
-					 begin_addr, mwd->CKSSEG - 1,
-					 handle_page, userdata);
-			begin_addr = mwd->CKSSEG;
-		}
-		if (end_addr > mwd->CKSSEG + 0x20000000) {
-			rv = walk_mips64(pelf, mwd, pgdaddr,
-					 mwd->CKSSEG + 0x20000000, end_addr,
-					 handle_page, userdata);
-			end_addr = mwd->CKSSEG + 0x20000000 - 1;
-		}
-		start = begin_addr & 0xffffffffffULL;
-		end = end_addr & 0xffffffffffULL;
-		topbits = ~0xffffffffffULL;
+			       mwd->MAP_BASE,
+			       mwd->MAP_BASE + mwd->TASK_SIZE64 - 1)) {
+		scan_start = mwd->MAP_BASE;
+		scan_end = mwd->MAP_BASE + mwd->TASK_SIZE64 - 1;
+	} else if (addr_range_covered(begin_addr, end_addr,
+				mwd->CKSEG0, mwd->CKSEG0 + 0x20000000 - 1)) {
+		scan_start = mwd->CKSEG0;
+		scan_end = mwd->CKSEG0 + 0x20000000 - 1;
+	} else if (addr_range_covered(begin_addr, end_addr,
+				mwd->CKSSEG, mwd->CKSSEG + 0x20000000 - 1)) {
+		scan_start = mwd->CKSSEG;
+		scan_end = mwd->CKSSEG + 0x20000000 - 1;
+	} else {
+		return 0;
 	}
+
+page_scan_range:
+	/*
+	 * We only scan one range at a time, if we have areas outside
+	 * the range we scan them separately.
+	 */
+	if (begin_addr < scan_start) {
+		rv = walk_mips64(pelf, mwd, pgdaddr,
+				 begin_addr, scan_start,
+				 handle_page, userdata);
+		begin_addr = scan_start;
+	}
+	if (end_addr > scan_end) {
+		rv = walk_mips64(pelf, mwd, pgdaddr,
+				 mwd->CKSSEG + 0x20000000, end_addr,
+				 handle_page, userdata);
+		end_addr = scan_end;
+	}
+
+	/*
+	 * begin_addr and end_addr have to be in the same region, so
+	 * topbits will be the same no matter which we choose.
+	 */
+	topbits = begin_addr & ~(mwd->TASK_SIZE64 - 1);
+	start = begin_addr & (mwd->TASK_SIZE64 - 1);
+	end = end_addr & (mwd->TASK_SIZE64 - 1);
 	start >>= mwd->pgd_shift;
 	end >>= mwd->pgd_shift;
 	if (end < (pgd_count - 1))
@@ -676,7 +768,12 @@ walk_mips64(struct elfc *pelf, const struct mips_walk_data *mwd,
 		if (mips_virt_to_phys64(mwd, pgdaddr, i, lpgd, &lpgd) == -1)
 			continue;
 
-		if (mwd->pmd_present)
+		if (mwd->pud_present)
+			rv = handle_64pud(pelf, mwd, topbits,
+					  ((GElf_Addr) i) << mwd->pgd_shift,
+					  lpgd, begin_addr, end_addr,
+					  handle_page, userdata);
+		else if (mwd->pmd_present)
 			rv = handle_64pmd(pelf, mwd, topbits,
 					  ((GElf_Addr) i) << mwd->pgd_shift,
 					  lpgd, begin_addr, end_addr,
@@ -712,13 +809,17 @@ mips_arch_setup(struct elfc *pelf, struct kdt_data *d, void **arch_data)
 		VMCI_ADDRESS(PAGE_OFFSET),
 		VMCI_ADDRESS(PHYS_OFFSET),
 		VMCI_ADDRESS(IO_BASE),
+		VMCI_ADDRESS(MAP_BASE),
 		VMCI_NUMBER(PMD_ORDER),
+		VMCI_NUMBER(PUD_ORDER),
+		VMCI_NUMBER(TASK_SIZE64),
 		VMCI_NUMBER(_PAGE_HUGE),
 		VMCI_NUMBER(PAGE_SHIFT),
 		VMCI_NUMBER(PGD_ORDER),
 		VMCI_NUMBER(PTE_ORDER),
 		VMCI_NUMBER(_PAGE_PRESENT),
-		VMCI_NUMBER(_PFN_SHIFT)
+		VMCI_NUMBER(_PFN_SHIFT),
+		VMCI_ADDRESS(phys_pgd_ptr)
 	};
 	int i;
 
@@ -746,6 +847,7 @@ mips_arch_setup(struct elfc *pelf, struct kdt_data *d, void **arch_data)
 	mwd->pfn_shift = vmci[VMCI_NUMBER__PFN_SHIFT].val;
 	mwd->_PAGE_HUGE = vmci[VMCI_NUMBER__PAGE_HUGE].val;/* Zero if not set */
 	mwd->PAGE_OFFSET = vmci[VMCI_ADDRESS_PAGE_OFFSET].val;
+	mwd->phys_pgd_ptr = vmci[VMCI_ADDRESS_phys_pgd_ptr].val;
 
 	/*
 	 * Don't get this from kdt_data, we may be called without
@@ -764,6 +866,19 @@ mips_arch_setup(struct elfc *pelf, struct kdt_data *d, void **arch_data)
 
 	mwd->pmd_present = vmci[VMCI_NUMBER_PMD_ORDER].found;
 	mwd->pmd_order = vmci[VMCI_NUMBER_PMD_ORDER].val;
+
+	mwd->pud_present = vmci[VMCI_NUMBER_PUD_ORDER].found;
+	mwd->pud_order = vmci[VMCI_NUMBER_PUD_ORDER].val;
+
+	if (vmci[VMCI_NUMBER_TASK_SIZE64].found)
+		mwd->TASK_SIZE64 = vmci[VMCI_NUMBER_TASK_SIZE64].val;
+	else
+		mwd->TASK_SIZE64 = (1ULL << 40);
+
+	if (vmci[VMCI_ADDRESS_MAP_BASE].found)
+		mwd->MAP_BASE = vmci[VMCI_ADDRESS_MAP_BASE].val;
+	else
+		mwd->MAP_BASE = 0xc000000000000000ULL;
 
 	if (mwd->pgd_order > MAX_ORDER) {
 		fprintf(stderr, "pgd_order is %d, only 0 or 1 are supported.\n",
