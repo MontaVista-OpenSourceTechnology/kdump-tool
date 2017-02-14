@@ -166,6 +166,7 @@ enum vmcoreinfo_labels {
 	VMCI_ADDRESS__text,
 	VMCI_ADDRESS__end,
 	VMCI_ADDRESS_phys_to_kernel_offset,
+	VMCI_ADDRESS_kernel_image_end,
 	VMCI_ADDRESS_CKSEG0,
 	VMCI_ADDRESS_CKSSEG,
 	VMCI_ADDRESS_PHYS_OFFSET,
@@ -211,6 +212,7 @@ struct mips_walk_data {
 	uint64_t _text;
 	uint64_t _end;
 	uint64_t phys_to_kernel_offset;
+	uint64_t kernel_image_end;
 	int mapped_kernel;
 
 	uint64_t phys_pgd_ptr;
@@ -721,6 +723,12 @@ walk_mips64(struct elfc *pelf, const struct mips_walk_data *mwd,
 				mwd->CKSEG0, mwd->CKSEG0 + 0x20000000 - 1)) {
 		scan_start = mwd->CKSEG0;
 		scan_end = mwd->CKSEG0 + 0x20000000 - 1;
+	} else if (mwd->mapped_kernel &&
+		   addr_range_covered(begin_addr, end_addr,
+			   mwd->kernel_image_end,
+			   (mwd->_text & ~(0x20000000 - 1)) + 0x20000000 - 1)) {
+		scan_start = mwd->kernel_image_end;
+		scan_end = (mwd->_text & ~(0x20000000 - 1)) + 0x20000000 - 1;
 	} else if (addr_range_covered(begin_addr, end_addr,
 				mwd->CKSSEG, mwd->CKSSEG + 0x20000000 - 1)) {
 		scan_start = mwd->CKSSEG;
@@ -804,6 +812,7 @@ mips_arch_setup(struct elfc *pelf, struct kdt_data *d, void **arch_data)
 		VMCI_ADDRESS(_text),
 		VMCI_ADDRESS(_end),
 		VMCI_ADDRESS(phys_to_kernel_offset),
+		VMCI_ADDRESS(kernel_image_end),
 		VMCI_ADDRESS(CKSEG0),
 		VMCI_ADDRESS(CKSSEG),
 		VMCI_ADDRESS(PAGE_OFFSET),
@@ -924,6 +933,18 @@ mips_arch_setup(struct elfc *pelf, struct kdt_data *d, void **arch_data)
 			mwd->phys_to_kernel_offset =
 				vmci[VMCI_ADDRESS_phys_to_kernel_offset].val;
 			mwd->mapped_kernel = 1;
+
+			/*
+			 * For mapped kernels, kernel_image_end is where
+			 * modules exist, in normal paged memory.
+			 */
+			if (vmci[VMCI_ADDRESS_kernel_image_end].found)
+				mwd->kernel_image_end =
+					vmci[VMCI_ADDRESS_kernel_image_end].val;
+			else
+				mwd->kernel_image_end =
+					((mwd->_end & 0xffffffffff000000) +
+					 0x1000000);
 		} else
 			mwd->mapped_kernel = 0;
 
