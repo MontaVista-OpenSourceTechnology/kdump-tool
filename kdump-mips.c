@@ -830,7 +830,7 @@ mips_arch_setup(struct elfc *pelf, struct kdt_data *d, void **arch_data)
 		VMCI_NUMBER(_PFN_SHIFT),
 		VMCI_ADDRESS(phys_pgd_ptr)
 	};
-	int i;
+	int i, base_shift;
 
 	mwd = malloc(sizeof(*mwd));
 	if (!mwd) {
@@ -890,20 +890,26 @@ mips_arch_setup(struct elfc *pelf, struct kdt_data *d, void **arch_data)
 		mwd->MAP_BASE = 0xc000000000000000ULL;
 
 	if (mwd->pgd_order > MAX_ORDER) {
-		fprintf(stderr, "pgd_order is %d, only 0 or 1 are supported.\n",
-			mwd->pgd_order);
+		fprintf(stderr, "pgd_order is %d, max is %d.\n",
+			mwd->pgd_order, MAX_ORDER);
+		return -1;
+	}
+
+	if (mwd->pud_present && mwd->pud_order > MAX_ORDER) {
+		fprintf(stderr, "pud_order is %d, max is %d.\n",
+			mwd->pud_order, MAX_ORDER);
 		return -1;
 	}
 
 	if (mwd->pmd_present && mwd->pmd_order > MAX_ORDER) {
-		fprintf(stderr, "pmd_order is %d, only 0 or 1 are supported.\n",
-			mwd->pmd_order);
+		fprintf(stderr, "pmd_order is %d, max is %d.\n",
+			mwd->pmd_order, MAX_ORDER);
 		return -1;
 	}
 
 	if (mwd->pte_order > MAX_ORDER) {
-		fprintf(stderr, "pte_order is %d, only 0 or 1 are supported.\n",
-			mwd->pte_order);
+		fprintf(stderr, "pte_order is %d, max is %d.\n",
+			mwd->pte_order, MAX_ORDER);
 		return -1;
 	}
 
@@ -960,38 +966,27 @@ mips_arch_setup(struct elfc *pelf, struct kdt_data *d, void **arch_data)
 		}
 		mwd->CKSSEG = vmci[VMCI_ADDRESS_CKSSEG].val;
 
-		if (mwd->pud_present) {
-			mwd->pmd_shift = mwd->page_shift +
-				(mwd->pte_order ? 10 : 9);
-			mwd->pud_shift = mwd->pmd_shift +
-				(mwd->pmd_order ? 10 : 9);
-			mwd->pgd_shift = mwd->pud_shift +
-				(mwd->pud_order ? 10 : 9);
-		} else if (mwd->pmd_present) {
-			mwd->pmd_shift = mwd->page_shift + 
-				(mwd->pte_order ? 10 : 9);
-			mwd->pgd_shift = mwd->pmd_shift +
-				(mwd->pmd_order ? 10 : 9);
-		} else {
-			mwd->pgd_shift = mwd->page_shift +
-				(mwd->pte_order ? 10 : 9);
-		}
+		base_shift = 9;
 	} else {
-		if (mwd->pmd_present) {
-			mwd->pmd_shift = mwd->page_shift +
-				(mwd->pte_order ? 11 : 10);
-			mwd->pgd_shift = mwd->pmd_shift +
-				(mwd->pmd_order ? 11 : 10);
-		} else
-			mwd->pgd_shift = mwd->page_shift +
-				(mwd->pte_order ? 11 : 10);
-		
 		if (!vmci[VMCI_ADDRESS_PHYS_OFFSET].found) {
 			fprintf(stderr,
 				"PHYS_OFFSET not present in core file\n");
 			return -1;
 		}
 		mwd->PHYS_OFFSET = vmci[VMCI_ADDRESS_PHYS_OFFSET].val;
+
+		base_shift = 10;
+	}
+
+	if (mwd->pud_present) {
+		mwd->pmd_shift = mwd->page_shift + base_shift + mwd->pte_order;
+		mwd->pud_shift = mwd->pmd_shift + base_shift + mwd->pmd_order;
+		mwd->pgd_shift = mwd->pud_shift + base_shift + mwd->pud_order;
+	} else if (mwd->pmd_present) {
+		mwd->pmd_shift = mwd->page_shift + base_shift + mwd->pte_order;
+		mwd->pgd_shift = mwd->pmd_shift + base_shift + mwd->pmd_order;
+	} else {
+		mwd->pgd_shift = mwd->page_shift + base_shift + mwd->pte_order;
 	}
 
 	if ((mwd->_PAGE_HUGE) && (d->page_size == 65536))
