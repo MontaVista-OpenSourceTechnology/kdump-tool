@@ -145,12 +145,16 @@
 
 #include "elfc.h"
 
-#define ENTRIES_PER_PGTAB(mwd, type, pgtab_size)			\
-	((1 << mwd->type ##_order) * (1 << mwd->page_shift) / (pgtab_size))
+/*
+ * Number of entries in a page table, the size in bytes of the page table
+ * divided by the number of bytes for an entry.
+ */
+#define ENTRIES_PER_PGTAB(mwd, type, pgentry_size)			\
+	((1 << mwd->type ##_order) * (1 << mwd->page_shift) / (pgentry_size))
 
-#define MAX_SHIFT 16
-#define MIN_SHIFT 12
-#define MAX_ORDER 1
+#define MAX_SHIFT 16 /* 64K pages. */
+#define MIN_SHIFT 12 /* 4K pages. */
+#define MAX_ORDER 1  /* We support up to 2 pages per page table level. */
 #define MAX_PGTAB_ENTRIES(pgentry_size) ((1 << MAX_SHIFT) * (1 << MAX_ORDER) / \
 					 (pgentry_size))
 
@@ -158,8 +162,9 @@
 #define ADDR64_MASK(shift) ((1ULL << (shift)) - 1)
 
 /*
+ * MIPS-specific things we get out of the vmcore from the old kernel.
  * Order here does not matter, as long as the required elements are all
- * last.
+ * last (after VREQ).
  */
 enum vmcoreinfo_labels {
 	VMCI_SIZE_list_head,
@@ -924,6 +929,7 @@ mips_arch_setup(struct elfc *pelf, struct kdt_data *d, void **arch_data)
 	mwd->conv32 = d->conv32;
 	mwd->conv64 = d->conv64;
 
+	base_shift = mwd->page_shift;
 	if (mwd->is_64bit) {
 		i = vmci[VMCI_ADDRESS__text].found +
 			vmci[VMCI_ADDRESS__end].found +
@@ -951,8 +957,9 @@ mips_arch_setup(struct elfc *pelf, struct kdt_data *d, void **arch_data)
 				mwd->kernel_image_end =
 					((mwd->_end & 0xffffffffff000000) +
 					 0x1000000);
-		} else
+		} else {
 			mwd->mapped_kernel = 0;
+		}
 
 		if (!vmci[VMCI_ADDRESS_CKSEG0].found) {
 			fprintf(stderr, "CKSEG0 not present in core file\n");
@@ -966,7 +973,7 @@ mips_arch_setup(struct elfc *pelf, struct kdt_data *d, void **arch_data)
 		}
 		mwd->CKSSEG = vmci[VMCI_ADDRESS_CKSSEG].val;
 
-		base_shift = 9;
+		base_shift -= 3; /* 8 bytes (2^3) per page entry. */
 	} else {
 		if (!vmci[VMCI_ADDRESS_PHYS_OFFSET].found) {
 			fprintf(stderr,
@@ -975,7 +982,7 @@ mips_arch_setup(struct elfc *pelf, struct kdt_data *d, void **arch_data)
 		}
 		mwd->PHYS_OFFSET = vmci[VMCI_ADDRESS_PHYS_OFFSET].val;
 
-		base_shift = 10;
+		base_shift -= 2; /* 4 bytes (2^2) per page entry. */
 	}
 
 	if (mwd->pud_present) {
