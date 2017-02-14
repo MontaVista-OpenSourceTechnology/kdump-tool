@@ -960,7 +960,14 @@ mips_arch_setup(struct elfc *pelf, struct kdt_data *d, void **arch_data)
 		}
 		mwd->CKSSEG = vmci[VMCI_ADDRESS_CKSSEG].val;
 
-		if (mwd->pmd_present) {
+		if (mwd->pud_present) {
+			mwd->pmd_shift = mwd->page_shift +
+				(mwd->pte_order ? 10 : 9);
+			mwd->pud_shift = mwd->pmd_shift +
+				(mwd->pmd_order ? 10 : 9);
+			mwd->pgd_shift = mwd->pud_shift +
+				(mwd->pud_order ? 10 : 9);
+		} else if (mwd->pmd_present) {
 			mwd->pmd_shift = mwd->page_shift + 
 				(mwd->pte_order ? 10 : 9);
 			mwd->pgd_shift = mwd->pmd_shift +
