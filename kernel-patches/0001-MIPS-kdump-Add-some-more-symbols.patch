@@ -1,4 +1,4 @@
-From 8571ddae8104618f750543fe99cbacff95b2c07e Mon Sep 17 00:00:00 2001
+From 482bce6ca3a6edbe19e127a216010df270832382 Mon Sep 17 00:00:00 2001
 From: Corey Minyard <cminyard@mvista.com>
 Date: Fri, 10 Feb 2017 22:39:16 -0600
 Subject: [PATCH] MIPS:kdump: Add some more symbols
@@ -10,11 +10,11 @@ Also, we need to include asm/sections.h to get _text and _end.
 
 Signed-off-by: Corey Minyard <cminyard@mvista.com>
 ---
- arch/mips/kernel/machine_kexec.c | 8 +++++++-
- 1 file changed, 7 insertions(+), 1 deletion(-)
+ arch/mips/kernel/machine_kexec.c | 9 ++++++++-
+ 1 file changed, 8 insertions(+), 1 deletion(-)
 
 diff --git a/arch/mips/kernel/machine_kexec.c b/arch/mips/kernel/machine_kexec.c
-index 299ed22..a801c22 100644
+index 299ed22..1193012 100644
 --- a/arch/mips/kernel/machine_kexec.c
 +++ b/arch/mips/kernel/machine_kexec.c
 @@ -13,6 +13,7 @@
@@ -37,7 +37,7 @@ index 299ed22..a801c22 100644
  	VMCOREINFO_NUMBER(PMD_ORDER);
  #endif
  	VMCOREINFO_NUMBER(PTE_ORDER);
-@@ -127,6 +131,7 @@ void arch_crash_save_vmcoreinfo(void)
+@@ -127,10 +131,12 @@ void arch_crash_save_vmcoreinfo(void)
  	VMCOREINFO_NUMBER(_PAGE_HUGE);
  #endif
  #ifdef CONFIG_64BIT
@@ -45,7 +45,12 @@ index 299ed22..a801c22 100644
  #ifdef CONFIG_MAPPED_KERNEL
  	VMCOREINFO_ADDRESS(_text);
  	VMCOREINFO_ADDRESS(_end);
-@@ -140,5 +145,6 @@ void arch_crash_save_vmcoreinfo(void)
+ 	VMCOREINFO_ADDRESS(phys_to_kernel_offset);
++	VMCOREINFO_ADDRESS(kernel_image_end);
+ #endif
+ 	VMCOREINFO_ADDRESS(CKSEG0);
+ 	VMCOREINFO_ADDRESS(CKSSEG);
+@@ -140,5 +146,6 @@ void arch_crash_save_vmcoreinfo(void)
  
  	VMCOREINFO_ADDRESS(PAGE_OFFSET);
  	VMCOREINFO_ADDRESS(IO_BASE);
