@@ -199,6 +199,7 @@ struct mips_walk_data {
 	unsigned int page_size;
 	unsigned int pgd_order;
 	unsigned int pgd_shift;
+	unsigned int total_shift;
 	int pud_present;
 	unsigned int pud_order;
 	unsigned int pud_shift;
@@ -591,6 +592,7 @@ handle_64pmd(struct elfc *pelf, const struct mips_walk_data *mwd,
 				1 << mwd->pmd_shift, userdata);
 			if (rv == -1)
 				return -1;
+			continue;
 		}
 		if (mips_virt_to_phys64(mwd, pmdaddr, i, lpmd, &lpmd) == -1)
 			continue;
@@ -709,16 +711,6 @@ walk_mips64(struct elfc *pelf, const struct mips_walk_data *mwd,
 	if (rv)
 		goto out;
 
-	/* Now do the page tables. */
-	rv = elfc_read_pmem(pelf, pgdaddr, pgd,
-			    pgd_count * sizeof(uint64_t));
-	if (rv == -1) {
-		fprintf(stderr, "Unable to read page directory at"
-			" %llx: %s\n", (unsigned long long) pgdaddr,
-			strerror(elfc_get_errno(pelf)));
-		goto out;
-	}
-
 	if (addr_range_covered(begin_addr, end_addr,
 			       mwd->MAP_BASE,
 			       mwd->MAP_BASE + mwd->TASK_SIZE64 - 1)) {
@@ -760,13 +752,23 @@ page_scan_range:
 		end_addr = scan_end;
 	}
 
+	/* Now do the page tables. */
+	rv = elfc_read_pmem(pelf, pgdaddr, pgd,
+			    pgd_count * sizeof(uint64_t));
+	if (rv == -1) {
+		fprintf(stderr, "Unable to read page directory at"
+			" %llx: %s\n", (unsigned long long) pgdaddr,
+			strerror(elfc_get_errno(pelf)));
+		goto out;
+	}
+
 	/*
 	 * begin_addr and end_addr have to be in the same region, so
 	 * topbits will be the same no matter which we choose.
 	 */
-	topbits = begin_addr & ~(mwd->TASK_SIZE64 - 1);
-	start = begin_addr & (mwd->TASK_SIZE64 - 1);
-	end = end_addr & (mwd->TASK_SIZE64 - 1);
+	topbits = begin_addr & ~((1ULL << mwd->total_shift) - 1);
+	start = begin_addr & ((1ULL << mwd->total_shift) - 1);
+	end = end_addr & ((1ULL << mwd->total_shift) - 1);
 	start >>= mwd->pgd_shift;
 	end >>= mwd->pgd_shift;
 	if (end < (pgd_count - 1))
@@ -995,6 +997,7 @@ mips_arch_setup(struct elfc *pelf, struct kdt_data *d, void **arch_data)
 	} else {
 		mwd->pgd_shift = mwd->page_shift + base_shift + mwd->pte_order;
 	}
+	mwd->total_shift = mwd->pgd_shift + base_shift + mwd->pgd_order;
 
 	if ((mwd->_PAGE_HUGE) && (d->page_size == 65536))
 		d->section_size_bits = 29;
