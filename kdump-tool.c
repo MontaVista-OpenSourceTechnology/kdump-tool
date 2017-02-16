@@ -51,11 +51,25 @@
 const char *progname;
 const char *subcmd;
 
+int debug;
+
 #define dpr(...) \
 	do {					\
-		if (d->debug)			\
+		if (debug)			\
 			printf(__VA_ARGS__);	\
 	} while(0)
+
+static void pr_err(const char *fmt, ...)
+{
+	va_list ap;
+	FILE *out = stderr;
+
+	va_start(ap, fmt);
+	if (debug) /* Make error and debug output align in stdout. */
+		out = stdout;
+	vfprintf(out, fmt, ap);
+	va_end(ap);
+}
 
 #define DEFAULT_OLDMEM "/dev/mem"
 void
@@ -130,7 +144,7 @@ enum base_vmci {
 
 #define _VMCI_CHECK_FOUND(vmci, fullname)				\
 	({if (!vmci[VMCI_ ## fullname].found) {		\
-		fprintf(stderr, "Error: %s not in vmcore\n", #fullname); \
+		pr_err("Error: %s not in vmcore\n", #fullname); \
 		return -1;						      \
 	}})
 #define VMCI_CHECK_FOUND(vmci, type, name)				\
@@ -152,7 +166,7 @@ int process_base_vmci(struct kdt_data *d, struct vmcoreinfo_data *vmci,
 		d->is_64bit = true;
 		d->ptrsize = 8;
 	} else {
-		fprintf(stderr, "Error: list_head size not valid: %llu\n",
+		pr_err("Error: list_head size not valid: %llu\n",
 			(unsigned long long) vmci[VMCI_SIZE_list_head].val);
 		return -1;
 	}
@@ -172,7 +186,7 @@ int process_base_vmci(struct kdt_data *d, struct vmcoreinfo_data *vmci,
 
 	d->arch = find_arch(elfc_getmachine(elf));
 	if (!d->arch) {
-		fprintf(stderr, "Unknown ELF machine in input file: %d\n",
+		pr_err("Unknown ELF machine in input file: %d\n",
 			elfc_getmachine(elf));
 		return -1;
 	}
@@ -244,7 +258,7 @@ handle_vmcoreinfo(const char *data, size_t len,
 			size_t nlen = next_off - off + 1;
 			char *ndata = malloc(nlen);
 			if (!ndata) {
-				fprintf(stderr, "Out of memory\n");
+				pr_err("Out of memory\n");
 				return -1;
 			}
 			memcpy(ndata, data + off, nlen);
@@ -378,7 +392,7 @@ copy_elf_notes(struct elfc *out, struct elfc *in,
 			 */
 			data = malloc(datalen);
 			if (!data) {
-				fprintf(stderr, "Out of memory getting note"
+				pr_err("Out of memory getting note"
 					" data\n");
 				return -1;
 			}
@@ -468,7 +482,10 @@ page_addr_mark_skipped(struct kdt_data *d, GElf_Addr addr, unsigned int count)
 	    count);
 	while (count) {
 		if (pfno >= range->nr_pages) {
-			fprintf(stderr, "Page free maps are insane\n");
+			pr_err("Page free maps are insane: "
+				"pfno=%lld nr_pages=%lld\n",
+				(unsigned long long) pfno,
+				(unsigned long long) range->nr_pages);
 			return -1;
 		}
 		if (elfc_pmem_offset(d->elf, paddr, d->page_size,
@@ -519,7 +536,7 @@ vfetch_page_handler(struct elfc *elf,
 
 	rv = elfc_read_pmem(elf, paddr + offset, vfd->out, len);
 	if (rv) {
-		fprintf(stderr, "Error reading physical memory at %llx: %s\n",
+		pr_err("Error reading physical memory at %llx: %s\n",
 			(unsigned long long) paddr + offset,
 			strerror(elfc_get_errno(elf)));
 		return -1;
@@ -555,7 +572,7 @@ fetch_struct32(struct kdt_data *d,
 	       char *name)
 {
 	if (data_size < offset + 4) {
-		fprintf(stderr, "Data item %s outside of structure\n", name);
+		pr_err("Data item %s outside of structure\n", name);
 		return -1;
 	}
 
@@ -570,7 +587,7 @@ fetch_struct64(struct kdt_data *d,
 	       char *name)
 {
 	if (data_size < offset + 8) {
-		fprintf(stderr, "Data item %s outside of structure\n", name);
+		pr_err("Data item %s outside of structure\n", name);
 		return -1;
 	}
 
@@ -706,14 +723,14 @@ read_pglist(struct kdt_data *d, GElf_Addr pglist_addr)
 
 	pglist = malloc(pglist_size);
 	if (!pglist) {
-		fprintf(stderr, "Could not allocate pglist data, size was"
+		pr_err("Could not allocate pglist data, size was"
 			" %lld bytes\n", (unsigned long long) pglist_size);
 		return NULL;
 	}
 
 	rv = fetch_vaddr_data(d, pglist_addr, pglist_size, pglist);
 	if (rv == -1) {
-		fprintf(stderr, "Could not fetch pglist data at %llx\n",
+		pr_err("Could not fetch pglist data at %llx\n",
 			(unsigned long long) pglist_addr);
 		free(pglist);
 		pglist = NULL;
@@ -730,7 +747,7 @@ add_page_range(struct kdt_data *d,
 
 	range = malloc(sizeof(*range));
 	if (!range) {
-		fprintf(stderr, "Out of memory allocating page range\n");
+		pr_err("Out of memory allocating page range\n");
 		return -1;
 	}
 
@@ -740,7 +757,7 @@ add_page_range(struct kdt_data *d,
 	range->bitmap = malloc(divide_round_up(count, 8));
 	if (!range->bitmap) {
 		free(range);
-		fprintf(stderr, "Out of memory allocating page bitmap\n");
+		pr_err("Out of memory allocating page bitmap\n");
 		return -1;
 	}
 	memset(range->bitmap, 0, divide_round_up(count, 8));
@@ -936,7 +953,7 @@ process_mem_section(struct kdt_data *d, uint64_t sectionnr,
 
 	range = malloc(sizeof(*range));
 	if (!range) {
-		fprintf(stderr, "Out of memory allocating page range\n");
+		pr_err("Out of memory allocating page range\n");
 		return -1;
 	}
 
@@ -946,7 +963,7 @@ process_mem_section(struct kdt_data *d, uint64_t sectionnr,
 	range->bitmap = malloc(divide_round_up(d->pages_per_section, 8));
 	if (!range->bitmap) {
 		free(range);
-		fprintf(stderr, "Out of memory allocating page bitmap\n");
+		pr_err("Out of memory allocating page bitmap\n");
 		return -1;
 	}
 	memset(range->bitmap, 0, divide_round_up(d->pages_per_section, 8));
@@ -974,7 +991,7 @@ read_sparse_maps(struct kdt_data *d, struct vmcoreinfo_data *vmci, bool extreme)
 		sections_size = (d->mem_section_size * d->sections_per_root);
 		sections = malloc(sections_size);
 		if (!sections) {
-			fprintf(stderr, "Could not allocate section\n");
+			pr_err("Could not allocate section\n");
 			rv = -1;
 			goto out_err;
 		}
@@ -985,7 +1002,7 @@ read_sparse_maps(struct kdt_data *d, struct vmcoreinfo_data *vmci, bool extreme)
 
 	mem_sections = malloc(mem_sections_size);
 	if (!mem_sections) {
-		fprintf(stderr, "Could not allocate mem section\n");
+		pr_err("Could not allocate mem section\n");
 		return -1;
 	}
 
@@ -1056,7 +1073,7 @@ read_discontig_maps(struct kdt_data *d, struct vmcoreinfo_data *vmci)
 
 	node_data = malloc(count * d->ptrsize);
 	if (!node_data) {
-		fprintf(stderr, "Out of memory allocating node data\n");
+		pr_err("Out of memory allocating node data\n");
 		return -1;
 	}
 
@@ -1140,7 +1157,7 @@ read_page_maps(struct kdt_data *d)
 	d->page_shift = val_to_shift(d->page_size);
 	d->pagedata = malloc(d->page_size);
 	if (!d->pagedata) {
-		fprintf(stderr, "Error: Out of memory allocating page data\n");
+		pr_err("Error: Out of memory allocating page data\n");
 		return -1;
 	}
 
@@ -1350,7 +1367,7 @@ gen_new_phdr(struct elfc *pelf, struct velf_data *dpage)
 			   PF_R | PF_W | PF_X,
 			   dpage->last_pgsize);
 	if (rv == -1) {
-		fprintf(stderr, "Unable to add phdr: %s\n",
+		pr_err("Unable to add phdr: %s\n",
 			strerror(elfc_get_errno(dpage->velf)));
 		return -1;
 	}
@@ -1359,7 +1376,7 @@ gen_new_phdr(struct elfc *pelf, struct velf_data *dpage)
 				velf_get_data, velf_set_data,
 				dpage);
 	if (rv) {
-		fprintf(stderr, "Unable to set phdr data: %s\n",
+		pr_err("Unable to set phdr data: %s\n",
 			strerror(elfc_get_errno(dpage->velf)));
 		return -1;
 	}
@@ -1389,7 +1406,7 @@ handle_skip(struct kdt_data *d, char *type,
 	    uint64_t pfn, GElf_Addr paddr, GElf_Addr vaddr)
 {
 	set_pfn_skipped(d, range, pfn);
-	if (d->debug)
+	if (debug)
 		print_pginfo("Skipping ", type, page, paddr, vaddr);
 }
 
@@ -1474,7 +1491,7 @@ process_page(struct velf_data *dpage,
 	}
 
 	d->not_skipped++;
-	if (d->debug)
+	if (debug)
 		print_pginfo("Accepting", "", &page, paddr, vaddr);
 
 	/*
@@ -1621,7 +1638,7 @@ topelf(int argc, char *argv[])
 			subcmd_help("", longopts, helpstr);
 			return 0;
 		case 'd':
-			d->debug++;
+			debug++;
 			break;
 		case '?':
 			subcmd_usage("Unknown option: %s\n", argv[curr_optind]);
@@ -1655,7 +1672,7 @@ topelf(int argc, char *argv[])
 	if (outfile) {
 		ofd = creat(outfile, 0644);
 		if (ofd == -1) {
-			fprintf(stderr, "Unable to open %s: %s\n", outfile,
+			pr_err("Unable to open %s: %s\n", outfile,
 				strerror(errno));
 			goto out_err;
 		}
@@ -1665,7 +1682,7 @@ topelf(int argc, char *argv[])
 		elfc_set_fd(d->elf, ofd);
 		rv = elfc_write(d->elf);
 		if (rv == -1) {
-			fprintf(stderr, "Error writing elfc file: %s\n",
+			pr_err("Error writing elfc file: %s\n",
 				strerror(elfc_get_errno(d->elf)));
 			goto out_err;
 		}
@@ -1674,12 +1691,12 @@ topelf(int argc, char *argv[])
 
 	velf = elfc_alloc();
 	if (!velf) {
-		fprintf(stderr, "Out of memory allocating elf obj\n");
+		pr_err("Out of memory allocating elf obj\n");
 		goto out_err;
 	}
 	rv = elfc_setup(velf, elfc_gettype(d->elf));
 	if (rv == -1) {
-		fprintf(stderr, "Error writing elfc file: %s\n",
+		pr_err("Error writing elfc file: %s\n",
 			strerror(elfc_get_errno(d->elf)));
 		goto out_err;
 	}
@@ -1712,7 +1729,7 @@ topelf(int argc, char *argv[])
 		GElf_Phdr phdr;
 		rv = elfc_get_phdr(d->elf, i, &phdr);
 		if (rv) {
-			fprintf(stderr, "Error reading phdr %d from input"
+			pr_err("Error reading phdr %d from input"
 				"file: %s",
 				i, strerror(elfc_get_errno(d->elf)));
 			goto out_err;
@@ -1738,7 +1755,7 @@ topelf(int argc, char *argv[])
 
 	rv = elfc_write(velf);
 	if (rv == -1) {
-		fprintf(stderr, "Error writing elfc file: %s\n",
+		pr_err("Error writing elfc file: %s\n",
 			strerror(elfc_get_errno(d->elf)));
 		goto out_err;
 	}
@@ -1773,23 +1790,23 @@ add_auxv(struct elfc *e, const char *vmlinux, GElf_Addr dyn_stext)
 
 	vml_elf = elfc_alloc();
 	if (!vml_elf) {
-		fprintf(stderr, "Unable to allocate ELF data for vmlinux\n");
+		pr_err("Unable to allocate ELF data for vmlinux\n");
 		return -1;
 	}
 	vml_fd = open(vmlinux, O_RDWR);
 	if (vml_fd == -1) {
-		fprintf(stderr, "Error opening vmlinux: %s\n", strerror(errno));
+		pr_err("Error opening vmlinux: %s\n", strerror(errno));
 		goto out;
 	}
 
 	if (elfc_open(vml_elf, vml_fd) == -1) {
-		fprintf(stderr, "Error elf opening vmlinux: %s\n",
+		pr_err("Error elf opening vmlinux: %s\n",
 			strerror(elfc_get_errno(vml_elf)));
 		goto out;
 	}
 
 	if (elfc_lookup_sym(vml_elf, "_stext", &sym, 0, NULL) == -1) {
-		fprintf(stderr, "Can't find _stext in vmlinux: %s\n",
+		pr_err("Can't find _stext in vmlinux: %s\n",
 			strerror(elfc_get_errno(vml_elf)));
 		goto out;
 	}
@@ -1816,7 +1833,7 @@ add_auxv(struct elfc *e, const char *vmlinux, GElf_Addr dyn_stext)
 		auxv.a_un.a_val = elfc_putAddr(e, dyn_entry);
 		rv = elfc_add_note(e, NT_AUXV, "CORE", 5, &auxv, sizeof(auxv));
 	} else {
-		fprintf(stderr, "Unknown elfclass?: %d\n", elfclass);
+		pr_err("Unknown elfclass?: %d\n", elfclass);
 		rv = -1;
 	}
 
@@ -1971,7 +1988,7 @@ tovelf(int argc, char *argv[])
 			subcmd_help("", longopts, helpstr);
 			return 0;
 		case 'd':
-			d->debug++;
+			debug++;
 			break;
 		case '?':
 			subcmd_usage("Unknown option: %s\n", argv[curr_optind]);
@@ -1997,18 +2014,18 @@ tovelf(int argc, char *argv[])
 			subcmd_usage("No input file specified\n");
 		fd = open(infile, O_RDONLY);
 		if (fd == -1) {
-			fprintf(stderr, "Unable to open %s: %s\n", infile,
+			pr_err("Unable to open %s: %s\n", infile,
 				strerror(errno));
 			goto out_err;
 		}
 		d->elf = elfc_alloc();
 		if (!d->elf) {
-			fprintf(stderr, "Out of memory allocating elf obj\n");
+			pr_err("Out of memory allocating elf obj\n");
 			goto out_err;
 		}
 		rv = elfc_open(d->elf, fd);
 		if (rv) {
-			fprintf(stderr, "Unable to elfc open %s: %s\n", infile,
+			pr_err("Unable to elfc open %s: %s\n", infile,
 				strerror(elfc_get_errno(d->elf)));
 			goto out_err;
 		}
@@ -2030,7 +2047,7 @@ tovelf(int argc, char *argv[])
 	if (outfile) {
 		ofd = creat(outfile, 0644);
 		if (ofd == -1) {
-			fprintf(stderr, "Unable to open %s: %s\n", outfile,
+			pr_err("Unable to open %s: %s\n", outfile,
 				strerror(errno));
 			goto out_err;
 		}
@@ -2038,12 +2055,12 @@ tovelf(int argc, char *argv[])
 
 	velf = elfc_alloc();
 	if (!velf) {
-		fprintf(stderr, "Out of memory allocating elf obj\n");
+		pr_err("Out of memory allocating elf obj\n");
 		goto out_err;
 	}
 	rv = elfc_setup(velf, elfc_gettype(d->elf));
 	if (rv == -1) {
-		fprintf(stderr, "Error writing elfc file: %s\n",
+		pr_err("Error writing elfc file: %s\n",
 			strerror(elfc_get_errno(d->elf)));
 		goto out_err;
 	}
@@ -2086,13 +2103,13 @@ tovelf(int argc, char *argv[])
 	if (vmlinux) {
 		rv = add_auxv(velf, vmlinux, vmci[VMCI_SYMBOL__stext].val);
 		if (rv == -1)
-			fprintf(stderr, "Warning: Unable to add auxv: %s\n",
+			pr_err("Warning: Unable to add auxv: %s\n",
 				strerror(elfc_get_errno(d->elf)));
 	}
 
 	rv = elfc_write(velf);
 	if (rv == -1) {
-		fprintf(stderr, "Error writing elfc file: %s\n",
+		pr_err("Error writing elfc file: %s\n",
 			strerror(elfc_get_errno(d->elf)));
 		goto out_err;
 	}
@@ -2169,36 +2186,36 @@ addrandomoffset(int argc, char *argv[])
 	}
 
 	if (!vmcore) {
-		fprintf(stderr, "No vmcore file given\n");
+		pr_err("No vmcore file given\n");
 		goto out;
 	}
 
 	if (!vmlinux) {
-		fprintf(stderr, "No vmlinux file given\n");
+		pr_err("No vmlinux file given\n");
 		goto out;
 	}
 
 	velf = elfc_alloc();
 	if (!velf) {
-		fprintf(stderr, "Unable to allocate ELF data for %s\n", vmcore);
+		pr_err("Unable to allocate ELF data for %s\n", vmcore);
 		goto out;
 	}
 	vfd = open(vmcore, O_RDWR);
 	if (vfd == -1) {
-		fprintf(stderr, "Error opening %s: %s\n", vmcore,
+		pr_err("Error opening %s: %s\n", vmcore,
 			strerror(errno));
 		goto out;
 	}
 
 	if (elfc_open(velf, vfd) == -1) {
-		fprintf(stderr, "Error elf opening %s: %s\n", vmcore,
+		pr_err("Error elf opening %s: %s\n", vmcore,
 			strerror(elfc_get_errno(velf)));
 		goto out;
 	}
 
 	handle_vminfo_notes(velf, vmci);
 	if (!vmci[VMCI_SYMBOL__stext].found) {
-		fprintf(stderr, "No _stext symbol found in %ss notes\n",
+		pr_err("No _stext symbol found in %ss notes\n",
 			vmcore);
 		goto out;
 	}
@@ -2208,7 +2225,7 @@ addrandomoffset(int argc, char *argv[])
 		GElf_Word note_type;
 		rv = elfc_get_note(velf, i, &note_type, NULL, NULL, NULL, NULL);
 		if (rv == -1) {
-			fprintf(stderr, "Error getting note from %s: %s\n",
+			pr_err("Error getting note from %s: %s\n",
 				vmcore, strerror(elfc_get_errno(velf)));
 			goto out;
 		}
@@ -2218,7 +2235,7 @@ addrandomoffset(int argc, char *argv[])
 
 		rv = elfc_del_note(velf, i);
 		if (rv == -1) {
-			fprintf(stderr, "Error getting auxv from %s: %s\n",
+			pr_err("Error getting auxv from %s: %s\n",
 				vmcore, strerror(elfc_get_errno(velf)));
 			goto out;
 		}
@@ -2227,12 +2244,12 @@ addrandomoffset(int argc, char *argv[])
 
 	rv = add_auxv(velf, vmlinux, vmci[VMCI_SYMBOL__stext].val);
 	if (rv == -1)
-		fprintf(stderr, "Unable to add auxv: %s\n",
+		pr_err("Unable to add auxv: %s\n",
 			strerror(elfc_get_errno(velf)));
 	else if (rv == 1) {
 		rv = elfc_write(velf);
 		if (rv == -1) {
-			fprintf(stderr, "Unable to write elf file: %s\n",
+			pr_err("Unable to write elf file: %s\n",
 				strerror(elfc_get_errno(velf)));
 		}
 	}
@@ -2254,24 +2271,24 @@ static int makedyn_one_exec(const char *file)
 
 	fd = open(file, O_RDWR);
 	if (fd == -1) {
-		fprintf(stderr, "Unable to open %s: %s\n", file,
+		pr_err("Unable to open %s: %s\n", file,
 			strerror(errno));
 		return 1;
 	}
 
 	rv = read(fd, e_ident, sizeof(e_ident));
 	if (rv == -1) {
-		fprintf(stderr, "Unable to read %s: %s\n", file,
+		pr_err("Unable to read %s: %s\n", file,
 			strerror(errno));
 		goto out_err;
 	}
 	if (rv < sizeof(e_ident)) {
-		fprintf(stderr, "Only able to read %d bytes from %s\n",
+		pr_err("Only able to read %d bytes from %s\n",
 			rv, file);
 		goto out_err;
 	}
 	if (memcmp(ELFMAG, e_ident, SELFMAG) != 0) {
-		fprintf(stderr, "%s not an ELF file\n", file);
+		pr_err("%s not an ELF file\n", file);
 		goto out_err;
 	}
 
@@ -2280,7 +2297,7 @@ static int makedyn_one_exec(const char *file)
 	} else if (e_ident[EI_DATA] == ELFDATA2MSB) {
 		type = e_ident[EI_NIDENT + 1] | e_ident[EI_NIDENT] << 8;
 	} else {
-		fprintf(stderr, "%s: Unknown data encoding: %d\n", file,
+		pr_err("%s: Unknown data encoding: %d\n", file,
 			e_ident[EI_DATA]);
 		goto out_err;
 	}
@@ -2290,7 +2307,7 @@ static int makedyn_one_exec(const char *file)
 		return 0;
 	}
 	if (type != ET_EXEC) {
-		fprintf(stderr, "%s: Not a fixed executable, type is: %d\n",
+		pr_err("%s: Not a fixed executable, type is: %d\n",
 			file, type);
 		goto out_err;
 	}
@@ -2306,14 +2323,14 @@ static int makedyn_one_exec(const char *file)
 
 	rv = lseek(fd, EI_NIDENT, SEEK_SET);
 	if (rv == -1) {
-		fprintf(stderr, "Unable to seek %s: %s\n", file,
+		pr_err("Unable to seek %s: %s\n", file,
 			strerror(errno));
 		goto out_err;
 	}
 
 	rv = write(fd, e_ident + EI_NIDENT, sizeof(type));
 	if (rv == -1) {
-		fprintf(stderr, "Unable to write to %s: %s\n", file,
+		pr_err("Unable to write to %s: %s\n", file,
 			strerror(errno));
 		goto out_err;
 	}
@@ -2510,18 +2527,18 @@ dumpmem(int argc, char *argv[])
 			subcmd_usage("No input file specified\n");
 		fd = open(infile, O_RDONLY);
 		if (fd == -1) {
-			fprintf(stderr, "Unable to open %s: %s\n", infile,
+			pr_err("Unable to open %s: %s\n", infile,
 				strerror(errno));
 			goto out_err;
 		}
 		elf = elfc_alloc();
 		if (!elf) {
-			fprintf(stderr, "Out of memory allocating elf obj\n");
+			pr_err("Out of memory allocating elf obj\n");
 			goto out_err;
 		}
 		rv = elfc_open(elf, fd);
 		if (rv) {
-			fprintf(stderr, "Unable to elfc open %s: %s\n", infile,
+			pr_err("Unable to elfc open %s: %s\n", infile,
 				strerror(elfc_get_errno(elf)));
 			goto out_err;
 		}
@@ -2530,7 +2547,7 @@ dumpmem(int argc, char *argv[])
 
 	buf = malloc(size);
 	if (!buf) {
-		fprintf(stderr, "Out of memory allocating buffer\n");
+		pr_err("Out of memory allocating buffer\n");
 		goto out_err;
 	}
 
@@ -2539,7 +2556,7 @@ dumpmem(int argc, char *argv[])
 	else
 		rv = elfc_read_vmem(elf, addr, buf, size);
 	if (rv == -1) {
-		fprintf(stderr, "Unable read data from file: %s\n",
+		pr_err("Unable read data from file: %s\n",
 			strerror(elfc_get_errno(elf)));
 		goto out_err;
 	}
@@ -2687,18 +2704,18 @@ virttophys(int argc, char *argv[])
 			subcmd_usage("No input file specified\n");
 		fd = open(infile, O_RDONLY);
 		if (fd == -1) {
-			fprintf(stderr, "Unable to open %s: %s\n", infile,
+			pr_err("Unable to open %s: %s\n", infile,
 				strerror(errno));
 			goto out_err;
 		}
 		d->elf = elfc_alloc();
 		if (!d->elf) {
-			fprintf(stderr, "Out of memory allocating elf obj\n");
+			pr_err("Out of memory allocating elf obj\n");
 			goto out_err;
 		}
 		rv = elfc_open(d->elf, fd);
 		if (rv) {
-			fprintf(stderr, "Unable to elfc open %s: %s\n", infile,
+			pr_err("Unable to elfc open %s: %s\n", infile,
 				strerror(elfc_get_errno(d->elf)));
 			goto out_err;
 		}

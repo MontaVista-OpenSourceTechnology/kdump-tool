@@ -156,8 +156,6 @@ enum dump_levels {
 };
 
 struct kdt_data {
-	int debug;
-
 	struct elfc *elf;
 	GElf_Addr pgd;
 	struct archinfo *arch;
