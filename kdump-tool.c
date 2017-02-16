@@ -134,12 +134,26 @@ process_levels(char *levelstr)
 		return -1;
 }
 
+static unsigned int
+val_to_shift(uint64_t val)
+{
+	unsigned int shift = 0;
+	if (!val)
+		return 0;
+	while (!(val & 1)) {
+		shift++;
+		val >>= 1;
+	}
+	return shift;
+}
+
 enum base_vmci {
 	VMCI_ADDRESS_phys_pgd_ptr,
 	VMCI_SIZE_list_head,
 	VMCI_OFFSET_list_head__next,
 	VMCI_OFFSET_list_head__prev,
-	VMCI_SYMBOL__stext
+	VMCI_SYMBOL__stext,
+	VMCI_PAGESIZE
 };
 
 #define _VMCI_CHECK_FOUND(vmci, fullname)				\
@@ -174,6 +188,10 @@ int process_base_vmci(struct kdt_data *d, struct vmcoreinfo_data *vmci,
 	d->list_head_next_offset = vmci[VMCI_OFFSET_list_head__next].val;
 	VMCI_CHECK_FOUND(vmci, OFFSET, list_head__prev);
 	d->list_head_prev_offset = vmci[VMCI_OFFSET_list_head__prev].val;
+
+	_VMCI_CHECK_FOUND(vmci, PAGESIZE);
+	d->page_size = vmci[VMCI_PAGESIZE].val;
+	d->page_shift = val_to_shift(d->page_size);
 
 	d->is_bigendian = elfc_getencoding(d->elf) == ELFDATA2MSB;
 	if (d->is_bigendian) {
@@ -418,19 +436,6 @@ copy_elf_notes(struct elfc *out, struct elfc *in,
 	return 0;
 }
 
-static unsigned int
-val_to_shift(uint64_t val)
-{
-	unsigned int shift = 0;
-	if (!val)
-		return 0;
-	while (!(val & 1)) {
-		shift++;
-		val >>= 1;
-	}
-	return shift;
-}
-
 static struct page_range *
 find_pfn_range(struct kdt_data *d, uint64_t pfn)
 {
@@ -673,7 +678,6 @@ out_err:
 }
 
 enum page_map_vmci {
-	VMCI_PAGESIZE,
 	VMCI_SYMBOL_mem_map,
 	VMCI_SYMBOL_contig_page_data,
 	VMCI_SYMBOL_mem_section,
@@ -1106,7 +1110,6 @@ static int
 read_page_maps(struct kdt_data *d)
 {
 	struct vmcoreinfo_data vmci[] = {
-		VMCI_PAGESIZE(),
 		VMCI_SYMBOL(mem_map),
 		VMCI_SYMBOL(contig_page_data),
 		VMCI_SYMBOL(mem_section),
@@ -1152,9 +1155,6 @@ read_page_maps(struct kdt_data *d)
 
 	handle_vminfo_notes(d->elf, vmci);
 
-	_VMCI_CHECK_FOUND(vmci, PAGESIZE);
-	d->page_size = vmci[VMCI_PAGESIZE].val;
-	d->page_shift = val_to_shift(d->page_size);
 	d->pagedata = malloc(d->page_size);
 	if (!d->pagedata) {
 		pr_err("Error: Out of memory allocating page data\n");
@@ -1589,6 +1589,7 @@ topelf(int argc, char *argv[])
 		VMCI_OFFSET(list_head, next),
 		VMCI_OFFSET(list_head, prev),
 		VMCI_SYMBOL(_stext),
+		VMCI_PAGESIZE(),
 		{ NULL }
 	};
 	struct kdt_data kdt_data, *d = &kdt_data;
@@ -1919,6 +1920,7 @@ tovelf(int argc, char *argv[])
 		VMCI_OFFSET(list_head, next),
 		VMCI_OFFSET(list_head, prev),
 		VMCI_SYMBOL(_stext),
+		VMCI_PAGESIZE(),
 		{ NULL }
 	};
 	int do_oldmem = 0;
@@ -2627,6 +2629,7 @@ virttophys(int argc, char *argv[])
 		VMCI_SIZE(list_head),
 		VMCI_OFFSET(list_head, next),
 		VMCI_OFFSET(list_head, prev),
+		VMCI_PAGESIZE(),
 		{ NULL }
 	};
 	int do_oldmem = 0;
