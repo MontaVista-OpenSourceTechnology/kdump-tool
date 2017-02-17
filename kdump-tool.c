@@ -59,7 +59,7 @@ int debug;
 			printf(__VA_ARGS__);	\
 	} while(0)
 
-static void pr_err(const char *fmt, ...)
+void pr_err(const char *fmt, ...)
 {
 	va_list ap;
 	FILE *out = stderr;
@@ -115,6 +115,22 @@ static uint32_t convbe32toh(void *in)
 static uint32_t convle32toh(void *in)
 {
 	return le32toh(*((uint32_t *) in));
+}
+static void convhtobe64(void *out, uint64_t val)
+{
+	*((uint64_t *) out) = htobe64(val);
+}
+static void convhtole64(void *out, uint64_t val)
+{
+	*((uint64_t *) out) = htole64(val);
+}
+static void convhtobe32(void *out, uint32_t val)
+{
+	*((uint32_t *) out) = htobe32(val);
+}
+static void convhtole32(void *out, uint32_t val)
+{
+	*((uint32_t *) out) = htole32(val);
 }
 
 static int
@@ -197,9 +213,13 @@ int process_base_vmci(struct kdt_data *d, struct vmcoreinfo_data *vmci,
 	if (d->is_bigendian) {
 		d->conv32 = convbe32toh;
 		d->conv64 = convbe64toh;
+		d->store32 = convhtobe32;
+		d->store64 = convhtobe64;
 	} else {
 		d->conv32 = convle32toh;
 		d->conv64 = convle64toh;
+		d->store32 = convhtole32;
+		d->store64 = convhtole64;
 	}
 
 	d->arch = find_arch(elfc_getmachine(elf));
@@ -355,6 +375,12 @@ vmcoreinfo_scanner(const char *nameptr, int namelen,
 			continue;
 		if (strncmp(name, nameptr, namelen) != 0)
 			continue;
+		if (vals[i].found)
+			/*
+			 * Only handle the first one, so extra_vminfo
+			 * overrides.
+			 */
+			continue;
 
 		if (vals[i].base == VMINFO_YN_BASE) {
 			if (*valptr == 'y')
@@ -374,8 +400,18 @@ vmcoreinfo_scanner(const char *nameptr, int namelen,
 }
 
 int
-handle_vminfo_notes(struct elfc *elf, struct vmcoreinfo_data *vals)
+handle_vminfo_notes(struct elfc *elf, struct vmcoreinfo_data *vals,
+		    char *extra_vminfo)
 {
+	int rv;
+	int extra_vminfo_len = 0;
+
+	if (extra_vminfo)
+		extra_vminfo_len = strlen(extra_vminfo);
+	rv = handle_vmcoreinfo(extra_vminfo, extra_vminfo_len,
+			       vmcoreinfo_scanner, vals);
+	if (rv == -1)
+		return rv;
 	return scan_for_vminfo_notes(elf, vmcoreinfo_scanner, vals);
 }
 
@@ -561,13 +597,77 @@ fetch_vaddr_data(struct kdt_data *d,
 		 GElf_Addr addr, unsigned int len, void *out)
 {
 	struct vfetchinfo vfd;
+	int rv;
 
 	vfd.out = out;
 	vfd.addr = addr;
 	vfd.len = len;
-	return d->arch->walk_page_table(d->elf, d->pgd, addr, addr + len - 1,
-					d->arch_data, vfetch_page_handler,
-					&vfd);
+	rv = d->arch->walk_page_table(d->elf, d->pgd, addr, addr + len - 1,
+				      d->arch_data, vfetch_page_handler,
+				      &vfd);
+	if (rv)
+		return rv;
+	if (vfd.len != 0)
+		return -1;
+	return 0;
+}
+
+int
+fetch_vaddr_data_err(struct kdt_data *d,
+		     GElf_Addr addr, unsigned int len, void *out, char *name)
+{
+	int rv = fetch_vaddr_data(d, addr, len, out);
+
+	if (rv && name)
+		pr_err("Error fetching %s at %llx len %u\n", name, addr, len);
+
+	return rv;
+}
+
+int
+fetch_vaddr32(struct kdt_data *d, GElf_Addr addr, uint32_t *out, char *name)
+{
+	uint32_t val;
+	int rv;
+
+	rv = fetch_vaddr_data_err(d, addr, sizeof(val), &val, name);
+	if (rv)
+		return rv;
+	*out = d->conv32(&val);
+	return 0;
+}
+
+int
+fetch_vaddr64(struct kdt_data *d, GElf_Addr addr, uint64_t *out, char *name)
+{
+	uint64_t val;
+	int rv;
+
+	rv = fetch_vaddr_data_err(d, addr, sizeof(val), &val, name);
+	if (rv)
+		return rv;
+	*out = d->conv64(&val);
+	return 0;
+}
+
+int
+fetch_vaddrlong(struct kdt_data *d, GElf_Addr addr, uint64_t *out, char *name)
+{
+	int rv;
+
+	if (d->is_64bit) {
+		uint64_t val = 0;
+		rv = fetch_vaddr64(d, addr, &val, name);
+		if (rv == 0)
+			*out = val;
+	} else {
+		uint32_t val = 0;
+		rv = fetch_vaddr32(d, addr, &val, name);
+		if (rv == 0)
+			*out = val;
+	}
+
+	return rv;
 }
 
 static int
@@ -1153,7 +1253,7 @@ read_page_maps(struct kdt_data *d)
 
 	list_init(&d->page_maps);
 
-	handle_vminfo_notes(d->elf, vmci);
+	handle_vminfo_notes(d->elf, vmci, d->extra_vminfo);
 
 	d->pagedata = malloc(d->page_size);
 	if (!d->pagedata) {
@@ -1556,6 +1656,55 @@ print_skipped(struct kdt_data *d)
 }
 
 static int
+read_vminfofile(char *filename, char **contents)
+{
+	int fd = -1, rv;
+	struct stat stats;
+	char *buf = 0;
+	off_t pos = 0;
+
+	fd = open(filename, O_RDONLY);
+	if (fd == -1)
+		goto out_err;
+
+	rv = fstat(fd, &stats);
+	if (rv == -1)
+		goto out_err;
+
+	buf = malloc(stats.st_size + 1);
+	if (!buf) {
+		rv = ENOMEM;
+		goto out_err;
+	}
+
+	while (stats.st_size > pos) {
+		rv = read(fd, buf + pos, stats.st_size - pos);
+		if (rv < 0) {
+			if (errno == EAGAIN)
+				continue;
+			rv = errno;
+			goto out_err;
+		} else if (rv == 0) {
+			break;
+		} else {
+			pos += rv;
+		}
+	}
+	buf[pos] = '\0';
+
+	*contents = buf;
+	return 0;
+
+out_err:
+	rv = errno;
+	if (fd != -1)
+		close(fd);
+	if (buf)
+		free(buf);
+	return rv;
+}
+
+static int
 topelf(int argc, char *argv[])
 {
 	char *outfile = NULL;
@@ -1569,6 +1718,7 @@ topelf(int argc, char *argv[])
 		{ "elfclass",	required_argument,	NULL, 'c' },
 		{ "level",	required_argument,	NULL, 'l' },
 		{ "debug",	no_argument,		NULL, 'd' },
+		{ "extravminfo",required_argument,	NULL, 'e' },
 		{ NULL }
 	};
 	static const char *helpstr[] = {
@@ -1579,6 +1729,7 @@ topelf(int argc, char *argv[])
 		"Set the elfclass (either 32 or 64)",
 		"Set the dump level: all, inuse, user, cache, or kernel",
 		"increment the debug level",
+		"Override or add new vminfo information",
 		NULL
 	};
 	int ofd = 1;
@@ -1600,11 +1751,12 @@ topelf(int argc, char *argv[])
 	int num_phdrs;
 	int i;
 	GElf_Addr addr;
+	char *extra_vminfofile = NULL;
 
 	memset(d, 0, sizeof(*d));
 	for (;;) {
 		int curr_optind = optind;
-		int c = getopt_long(argc, argv, "+ho:i:v:c:l:d", longopts,
+		int c = getopt_long(argc, argv, "+ho:i:v:c:l:de:", longopts,
 				    NULL);
 		if (c == -1)
 			break;
@@ -1617,6 +1769,9 @@ topelf(int argc, char *argv[])
 			break;
 		case 'v':
 			vmcore = optarg;
+			break;
+		case 'e':
+			extra_vminfofile = optarg;
 			break;
 		case 'c':
 			if (strcmp(optarg, "32") == 0) {
@@ -1652,19 +1807,31 @@ topelf(int argc, char *argv[])
 		subcmd_usage("Too many arguments, starting at %s\n",
 			     argv[optind]);
 
-	d->elf = read_oldmem(oldmem, vmcore);
+	if (extra_vminfofile) {
+		rv = read_vminfofile(extra_vminfofile, &d->extra_vminfo);
+		if (rv) {
+			pr_err("Unable to read vminfofile %s: %s\n",
+			       extra_vminfofile, strerror(rv));
+			goto out_err;
+		}
+	}
+
+	d->elf = read_oldmem(oldmem, vmcore, d->extra_vminfo);
 	if (!d->elf)
 		goto out_err;
 
-	handle_vminfo_notes(d->elf, vmci);
+	handle_vminfo_notes(d->elf, vmci, d->extra_vminfo);
+
+	rv = process_base_vmci(d, vmci, d->elf);
+	if (rv)
+		goto out_err;
+
 	if (!vmci[VMCI_ADDRESS_phys_pgd_ptr].found) {
 		if (d->level == DUMP_ALL)
-			fprintf(stderr,
-				"Warning: phys pgd ptr not in vmcore\n");
+			pr_err("Warning: phys pgd ptr not in vmcore\n");
 		else {
-			fprintf(stderr,
-				"Error: phys pgd ptr not in vmcore, can"
-				" only do all dump level\n");
+			pr_err("Error: phys pgd ptr not in vmcore, can"
+			       " only do all dump level\n");
 			goto out_err;
 		}
 	}
@@ -1706,10 +1873,6 @@ topelf(int argc, char *argv[])
 	copy_elf_notes(velf, d->elf, NULL, NULL);
 
 	elfc_set_fd(velf, ofd);
-
-	rv = process_base_vmci(d, vmci, d->elf);
-	if (rv)
-		goto out_err;
 
 	if (elfclass == ELFCLASSNONE) {
 		elfc_setclass(velf, d->arch->default_elfclass);
@@ -1873,6 +2036,245 @@ velf_page_handler(struct elfc *pelf,
 	return 0;
 }
 
+/*
+ * Called when copying the ELF notes, so we can know what CPUs are
+ * there.
+ */
+static int
+add_cpu_info(GElf_Word type, const char *name, size_t namelen,
+	     void *data, size_t data_len, void *userdata)
+{
+	struct kdt_data *d = userdata;
+	struct cpu_info *cpu;
+
+	if (type != NT_PRSTATUS)
+		return 0;
+
+	cpu = malloc(sizeof(*cpu));
+	if (!cpu) {
+		pr_err("Out of memory in add_cpu_info\n");
+		return -1;
+	}
+
+	if (d->is_64bit) {
+		struct kd_elf_prstatus64 *pr = data;
+
+		if (data_len < sizeof(*pr)) {
+			pr_err("Invalid note size: %d bytes\n", (int) data_len);
+			return -1;
+		}
+
+		cpu->pid = d->conv32(&pr->pr_pid);
+	} else {
+		struct kd_elf_prstatus32 *pr = data;
+
+		if (data_len < sizeof(*pr)) {
+			pr_err("Invalid note size: %d bytes\n", (int) data_len);
+			return -1;
+		}
+
+		cpu->pid = d->conv32(&pr->pr_pid);
+	}
+	cpu->cpu = d->cpunum;
+	cpu->next = d->cpus;
+	d->cpus = cpu;
+	d->cpunum++;
+
+	return 0;
+}
+
+enum thread_info_labels {
+	VMCI_SYMBOL_resume, /* for MIPS */
+	/* Begin required elements. */
+#define KV_REQ VMCI_SYMBOL_init_task
+	VMCI_SYMBOL_init_task,
+	VMCI_OFFSET_task__stack,
+	VMCI_OFFSET_task__tasks,
+	VMCI_OFFSET_task__thread_node,
+	VMCI_OFFSET_task__signal,
+	VMCI_OFFSET_task__pid,
+	VMCI_OFFSET_task__thread,
+	VMCI_OFFSET_signal__thread_head
+};
+
+typedef int (*thread_handler)(struct kdt_data *d, GElf_Addr task,
+			      void *userdata);
+
+static int
+handle_kernel_process_threads(struct kdt_data *d, GElf_Addr task,
+			      thread_handler handler, void *userdata)
+{
+	uint64_t signal, thread_head, thread_link;
+	int rv;
+	long count = 0;
+
+	rv = fetch_vaddrlong(d, task + d->task_signal, &signal, "task.signal");
+	if (rv)
+		return rv;
+
+	thread_head = signal + d->signal_thread_head;
+
+	rv = fetch_vaddrlong(d, thread_head + d->list_head_next_offset,
+			     &thread_link, "first thread");
+	if (rv)
+		return rv;
+
+	while (thread_link != thread_head) {
+		rv = handler(d, thread_link - d->task_thread_node, userdata);
+		if (rv)
+			return rv;
+
+		rv = fetch_vaddrlong(d, thread_link + d->list_head_next_offset,
+				     &thread_link, "next thread");
+		if (rv)
+			return rv;
+
+		if (count++ > 65536) {
+			pr_err("Too many threads in list, aborting\n");
+			return -1;
+		}
+	}
+
+	return 0;
+}
+
+static int
+handle_kernel_processes_threads(struct kdt_data *d, thread_handler handler,
+				void *userdata)
+{
+	struct vmcoreinfo_data vmci[] = {
+		VMCI_SYMBOL(resume),
+		VMCI_SYMBOL(init_task),
+		VMCI_OFFSET(task, stack),
+		VMCI_OFFSET(task, tasks),
+		VMCI_OFFSET(task, thread_node),
+		VMCI_OFFSET(task, signal),
+		VMCI_OFFSET(task, pid),
+		VMCI_OFFSET(task, thread),
+		VMCI_OFFSET(signal, thread_head),
+		{ NULL }
+	};
+	uint64_t task_addr, init_task_addr;
+	long count = 0;
+	unsigned int i;
+
+	handle_vminfo_notes(d->elf, vmci, d->extra_vminfo);
+	for (i = KV_REQ; vmci[i].name; i++) {
+		if (!vmci[i].found) {
+			pr_err("vmcoreinfo value %s not found.  You need to "
+			       "run the gdb command to supply these values "
+			       "and supply them with the -e option to this "
+			       "program.\n", vmci[i].name);
+			return -1;
+		}
+	}
+
+	d->task_stack = vmci[VMCI_OFFSET_task__stack].val;
+	d->task_tasks_next = vmci[VMCI_OFFSET_task__tasks].val +
+		d->list_head_next_offset;
+	d->task_thread_node = vmci[VMCI_OFFSET_task__thread_node].val;
+	d->task_signal = vmci[VMCI_OFFSET_task__signal].val;
+	d->task_pid = vmci[VMCI_OFFSET_task__pid].val;
+	d->signal_thread_head = vmci[VMCI_OFFSET_signal__thread_head].val;
+	d->task_thread = vmci[VMCI_OFFSET_task__thread].val;
+	d->mips_task_resume_found = vmci[VMCI_SYMBOL_resume].found;
+	if (d->mips_task_resume_found)
+		d->mips_task_resume = vmci[VMCI_SYMBOL_resume].val;
+
+	init_task_addr = vmci[VMCI_SYMBOL_init_task].val;
+
+	task_addr = init_task_addr;
+	do {
+		int rv = handle_kernel_process_threads(d, task_addr,
+						       handler, userdata);
+		if (rv)
+			return rv;
+
+		rv = fetch_vaddrlong(d, task_addr + d->task_tasks_next,
+				     &task_addr, "next task");
+		if (rv)
+			return rv;
+		task_addr -= d->task_tasks_next;
+
+		if (count++ > 65536) {
+			pr_err("Too many processes in list, aborting\n");
+			return -1;
+		}
+	} while (task_addr != init_task_addr);
+
+	return 0;
+}
+
+static int add_proc_thread(struct kdt_data *d, GElf_Addr task, void *userdata)
+{
+	void *data, *pt_regsptr;
+	unsigned int len;
+	int rv;
+	uint32_t pid;
+	struct cpu_info *cpu;
+
+	if (!d->fetch_ptregs || !d->pt_regs_size) {
+		pr_err("Architecture can't fetch task registers, can't "
+		       "convert kernel processes to gdb threads\n");
+		return -1;
+	}
+
+	rv = fetch_vaddr32(d, task + d->task_pid, &pid, "task.pid");
+	if (rv)
+		return rv;
+
+	/* If it's a running thread, use the one provided by the kernel. */
+	for (cpu = d->cpus; cpu; cpu = cpu->next) {
+		if (cpu->pid == pid)
+			return 0;
+	}
+
+	if (d->is_64bit) {
+		struct kd_elf_prstatus64 *pr;
+
+		pr = malloc(sizeof(*pr) + d->pt_regs_size);
+		if (!pr)
+			goto out_no_mem;
+		memset(pr, 0, sizeof(*pr));
+		data = pr;
+
+		d->store32(&pr->pr_pid, pid);
+		pt_regsptr = ((char *) pr) + sizeof(*pr);
+		len = sizeof(*pr) + d->pt_regs_size;
+	} else {
+		struct kd_elf_prstatus32 *pr;
+
+		pr = malloc(sizeof(*pr) + d->pt_regs_size);
+		if (!pr)
+			goto out_no_mem;
+		memset(pr, 0, sizeof(*pr));
+		data = pr;
+
+		d->store32(&pr->pr_pid, pid);
+		pt_regsptr = ((char *) pr) + sizeof(*pr);
+		len = sizeof(*pr) + d->pt_regs_size;
+	}
+
+	memset(pt_regsptr, 0, d->pt_regs_size);
+	rv = d->fetch_ptregs(d, task, pt_regsptr);
+	if (rv)
+		goto out_err;
+
+	rv = elfc_add_note(d->velf, NT_PRSTATUS, "CORE", 5, data, len);
+	if (rv)
+		pr_err("Unable to add thread info note: %s\n",
+		       strerror(elfc_get_errno(d->velf)));
+
+out_err:
+	free(data);
+
+	return rv;
+
+out_no_mem:
+	pr_err("Out of memory creating thread info note\n");
+	return -1;
+}
+
 static int
 tovelf(int argc, char *argv[])
 {
@@ -1890,6 +2292,8 @@ tovelf(int argc, char *argv[])
 		{ "level",	required_argument,	NULL, 'l' },
 		{ "debug",	no_argument,		NULL, 'd' },
 		{ "vmlinux",	required_argument,	NULL, 'm' },
+		{ "extravminfo",required_argument,	NULL, 'e' },
+		{ "procthreads",no_argument,		NULL, 'p' },
 		{ NULL }
 	};
 	static const char *helpstr[] = {
@@ -1906,6 +2310,8 @@ tovelf(int argc, char *argv[])
 		"Set the vmlinux file for this build, required if the dumped"
 		" kernel has a randomized base to set the offset (or use"
 		" addrandomoffset later).",
+		"Override or add new vminfo information",
+		"Convert kernel processes/threads into gdb threads",
 		NULL
 	};
 	int fd = -1;
@@ -1928,12 +2334,14 @@ tovelf(int argc, char *argv[])
 	int elfclass = ELFCLASSNONE;
 	int level = DUMP_KERNEL;
 	char *vmlinux = NULL;
+	char *extra_vminfofile = NULL;
+	bool proc_threads = false;
 
 	memset(d, 0, sizeof(*d));
 	for (;;) {
 		int curr_optind = optind;
-		int c = getopt_long(argc, argv, "+ho:i:v:I:P:c:l:dm:", longopts,
-				    NULL);
+		int c = getopt_long(argc, argv, "+ho:i:v:I:P:c:l:dm:e:p",
+				    longopts, NULL);
 		if (c == -1)
 			break;
 		switch (c) {
@@ -1945,6 +2353,12 @@ tovelf(int argc, char *argv[])
 			break;
 		case 'v':
 			vmcore = optarg;
+			break;
+		case 'e':
+			extra_vminfofile = optarg;
+			break;
+		case 'p':
+			proc_threads = true;
 			break;
 		case 'I':
 			if (strcmp(optarg, "oldmem") == 0) {
@@ -2005,10 +2419,19 @@ tovelf(int argc, char *argv[])
 		goto out_err;
 	}
 
+	if (extra_vminfofile) {
+		rv = read_vminfofile(extra_vminfofile, &d->extra_vminfo);
+		if (rv) {
+			pr_err("Unable to read vminfofile %s: %s\n",
+			       extra_vminfofile, strerror(rv));
+			goto out_err;
+		}
+	}
+
 	if (do_oldmem) {
 		if (!infile)
 			infile = DEFAULT_OLDMEM;
-		d->elf = read_oldmem(infile, vmcore);
+		d->elf = read_oldmem(infile, vmcore, d->extra_vminfo);
 		if (!d->elf)
 			goto out_err;
 	} else {
@@ -2034,14 +2457,17 @@ tovelf(int argc, char *argv[])
 		fd = -1;
 	}
 
-	handle_vminfo_notes(d->elf, vmci);
+	handle_vminfo_notes(d->elf, vmci, d->extra_vminfo);
+
+	rv = process_base_vmci(d, vmci, d->elf);
+	if (rv)
+		goto out_err;
 
 	if (!pgd_set) {
 		if (vmci[VMCI_ADDRESS_phys_pgd_ptr].found)
 			d->pgd = vmci[VMCI_ADDRESS_phys_pgd_ptr].val;
 		else {
-			fprintf(stderr,
-				"pgd not given and not in input file.\n");
+			pr_err("pgd not given and not in input file.\n");
 			goto out_err;
 		}
 	}
@@ -2060,6 +2486,7 @@ tovelf(int argc, char *argv[])
 		pr_err("Out of memory allocating elf obj\n");
 		goto out_err;
 	}
+	d->velf = velf;
 	rv = elfc_setup(velf, elfc_gettype(d->elf));
 	if (rv == -1) {
 		pr_err("Error writing elfc file: %s\n",
@@ -2068,13 +2495,15 @@ tovelf(int argc, char *argv[])
 	}
 	elfc_setmachine(velf, elfc_getmachine(d->elf));
 	elfc_setencoding(velf, elfc_getencoding(d->elf));
-	copy_elf_notes(velf, d->elf, NULL, NULL);
+	copy_elf_notes(velf, d->elf, add_cpu_info, d);
 
 	elfc_set_fd(velf, ofd);
 
-	rv = process_base_vmci(d, vmci, d->elf);
-	if (rv)
-		goto out_err;
+	if (proc_threads) {
+		rv = handle_kernel_processes_threads(d, add_proc_thread, NULL);
+		if (rv)
+			goto out_err;
+	}
 
 	rv = read_page_maps(d);
 	if (rv == -1)
@@ -2156,19 +2585,23 @@ addrandomoffset(int argc, char *argv[])
 		{ "help",	no_argument,		NULL, 'h' },
 		{ "vmcore",	required_argument,	NULL, 'v' },
 		{ "vmlinux",	required_argument,	NULL, 'm' },
+		{ "extravminfo",required_argument,	NULL, 'e' },
 		{ NULL }
 	};
 	static const char *helpstr[] = {
 		"This info",
 		"The vmcore file, required",
 		"Set the vmlinux file for this core, required.",
+		"Override or add new vminfo information",
 		NULL
 	};
 	const char *vmcore = NULL, *vmlinux = NULL;
+	char *extra_vminfofile = NULL;
+	char *extra_vminfo = NULL;
 
 	for (;;) {
 		int curr_optind = optind;
-		int c = getopt_long(argc, argv, "+hv:m:", longopts,
+		int c = getopt_long(argc, argv, "+hv:m:e:", longopts,
 				    NULL);
 		if (c == -1)
 			break;
@@ -2178,6 +2611,9 @@ addrandomoffset(int argc, char *argv[])
 			break;
 		case 'm':
 			vmlinux = optarg;
+			break;
+		case 'e':
+			extra_vminfofile = optarg;
 			break;
 		case 'h':
 			subcmd_help("", longopts, helpstr);
@@ -2195,6 +2631,15 @@ addrandomoffset(int argc, char *argv[])
 	if (!vmlinux) {
 		pr_err("No vmlinux file given\n");
 		goto out;
+	}
+
+	if (extra_vminfofile) {
+		rv = read_vminfofile(extra_vminfofile, &extra_vminfo);
+		if (rv) {
+			pr_err("Unable to read vminfofile %s: %s\n",
+			       extra_vminfofile, strerror(rv));
+			goto out;
+		}
 	}
 
 	velf = elfc_alloc();
@@ -2215,7 +2660,7 @@ addrandomoffset(int argc, char *argv[])
 		goto out;
 	}
 
-	handle_vminfo_notes(velf, vmci);
+	handle_vminfo_notes(velf, vmci, extra_vminfo);
 	if (!vmci[VMCI_SYMBOL__stext].found) {
 		pr_err("No _stext symbol found in %ss notes\n",
 			vmcore);
@@ -2431,6 +2876,7 @@ dumpmem(int argc, char *argv[])
 		{ "vmcore",	required_argument,	NULL, 'v' },
 		{ "intype",	required_argument,	NULL, 'I' },
 		{ "is_physical",no_argument,		NULL, 'p' },
+		{ "extravminfo",required_argument,	NULL, 'e' },
 		{ NULL }
 	};
 	static const char *helpstr[] = {
@@ -2440,6 +2886,7 @@ dumpmem(int argc, char *argv[])
 		"The vmcore file, defaults to /proc/vmcore, only for oldmem",
 		"The file type, either pelf or oldmem, defaults to pelf",
 		"Is the address physical or virtual?",
+		"Override or add new vminfo information",
 		"<addr> - Start address",
 		"<size> - Number of bytes to dump",
 		NULL
@@ -2453,10 +2900,12 @@ dumpmem(int argc, char *argv[])
 	int is_phys = 0;
 	char *endc;
 	void *buf;
+	char *extra_vminfofile = NULL;
+	char *extra_vminfo = NULL;
 
 	for (;;) {
 		int curr_optind = optind;
-		int c = getopt_long(argc, argv, "+hi:v:I:p", longopts,
+		int c = getopt_long(argc, argv, "+hi:v:I:pe:", longopts,
 				    NULL);
 		if (c == -1)
 			break;
@@ -2466,6 +2915,9 @@ dumpmem(int argc, char *argv[])
 			break;
 		case 'v':
 			vmcore = optarg;
+			break;
+		case 'e':
+			extra_vminfofile = optarg;
 			break;
 		case 'I':
 			if (strcmp(optarg, "oldmem") == 0) {
@@ -2518,10 +2970,19 @@ dumpmem(int argc, char *argv[])
 		return 1;
 	}
 
+	if (extra_vminfofile) {
+		rv = read_vminfofile(extra_vminfofile, &extra_vminfo);
+		if (rv) {
+			pr_err("Unable to read vminfofile %s: %s\n",
+			       extra_vminfofile, strerror(rv));
+			goto out_err;
+		}
+	}
+
 	if (do_oldmem) {
 		if (!infile)
 			infile = DEFAULT_OLDMEM;
-		elf = read_oldmem(infile, vmcore);
+		elf = read_oldmem(infile, vmcore, extra_vminfo);
 		if (!elf)
 			goto out_err;
 	} else {
@@ -2607,6 +3068,7 @@ virttophys(int argc, char *argv[])
 		{ "vmcore",	required_argument,	NULL, 'v' },
 		{ "intype",	required_argument,	NULL, 'I' },
 		{ "physpgd",	required_argument,	NULL, 'P' },
+		{ "extravminfo",required_argument,	NULL, 'e' },
 		{ NULL }
 	};
 	static const char *helpstr[] = {
@@ -2618,6 +3080,7 @@ virttophys(int argc, char *argv[])
 		"The file type, either pelf or oldmem, defaults to pelf",
 		"The physical address of the kernel page descriptor",
 		"<addr> - The address to convert",
+		"Override or add new vminfo information",
 		NULL
 	};
 	int fd = -1;
@@ -2636,11 +3099,12 @@ virttophys(int argc, char *argv[])
 	struct velf_data dpage;
 	GElf_Addr addr;
 	char *endc;
+	char *extra_vminfofile = NULL;
 
 	memset(d, 0, sizeof(*d));
 	for (;;) {
 		int curr_optind = optind;
-		int c = getopt_long(argc, argv, "+ho:i:v:I:P:c:l:d", longopts,
+		int c = getopt_long(argc, argv, "+ho:i:v:I:P:c:l:de:", longopts,
 				    NULL);
 		if (c == -1)
 			break;
@@ -2650,6 +3114,9 @@ virttophys(int argc, char *argv[])
 			break;
 		case 'v':
 			vmcore = optarg;
+			break;
+		case 'e':
+			extra_vminfofile = optarg;
 			break;
 		case 'I':
 			if (strcmp(optarg, "oldmem") == 0) {
@@ -2696,10 +3163,19 @@ virttophys(int argc, char *argv[])
 		goto out_err;
 	}
 
+	if (extra_vminfofile) {
+		rv = read_vminfofile(extra_vminfofile, &d->extra_vminfo);
+		if (rv) {
+			pr_err("Unable to read vminfofile %s: %s\n",
+			       extra_vminfofile, strerror(rv));
+			goto out_err;
+		}
+	}
+
 	if (do_oldmem) {
 		if (!infile)
 			infile = DEFAULT_OLDMEM;
-		d->elf = read_oldmem(infile, vmcore);
+		d->elf = read_oldmem(infile, vmcore, d->extra_vminfo);
 		if (!d->elf)
 			goto out_err;
 	} else {
@@ -2725,21 +3201,20 @@ virttophys(int argc, char *argv[])
 		fd = -1;
 	}
 
-	handle_vminfo_notes(d->elf, vmci);
+	handle_vminfo_notes(d->elf, vmci, d->extra_vminfo);
+
+	rv = process_base_vmci(d, vmci, d->elf);
+	if (rv)
+		goto out_err;
 
 	if (!pgd_set) {
 		if (vmci[VMCI_ADDRESS_phys_pgd_ptr].found)
 			d->pgd = vmci[VMCI_ADDRESS_phys_pgd_ptr].val;
 		else {
-			fprintf(stderr,
-				"pgd not given and not in input file.\n");
+			pr_err("pgd not given and not in input file.\n");
 			goto out_err;
 		}
 	}
-
-	rv = process_base_vmci(d, vmci, d->elf);
-	if (rv)
-		goto out_err;
 
 	rv = read_page_maps(d);
 	if (rv == -1)

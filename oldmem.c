@@ -432,55 +432,6 @@ add_phys_pgd_ptr(struct elfc *elf, struct elfc *velf, GElf_Addr virt_pgdir)
 	return 0;
 }
 
-/*
- * All the following structures are stolen and modified from
- * include/linux/elfcore.h and adjusted so they can work cross.
- */
-struct kd_elf_siginfo
-{
-	int32_t	si_signo;			/* signal number */
-	int32_t	si_code;			/* extra code */
-	int32_t	si_errno;			/* errno */
-};
-
-typedef int32_t kd_pid_t;
-typedef struct { int32_t tv_sec; int32_t tv_usec; } kd_timeval32_t;
-typedef struct { int64_t tv_sec; int64_t tv_usec; } kd_timeval64_t;
-
-struct kd_elf_prstatus32
-{
-	struct kd_elf_siginfo pr_info;
-	int16_t	pr_cursig;
-	uint32_t pr_sigpend;
-	uint32_t pr_sighold;
-	kd_pid_t pr_pid;
-	kd_pid_t pr_ppid;
-	kd_pid_t pr_pgrp;
-	kd_pid_t pr_sid;
-	kd_timeval32_t pr_utime;
-	kd_timeval32_t pr_stime;
-	kd_timeval32_t pr_cutime;
-	kd_timeval32_t pr_cstime;
-	unsigned char pr_regs[1];
-};
-
-struct kd_elf_prstatus64
-{
-	struct kd_elf_siginfo pr_info;
-	int16_t	pr_cursig;
-	uint64_t pr_sigpend;
-	uint64_t pr_sighold;
-	kd_pid_t pr_pid;
-	kd_pid_t pr_ppid;
-	kd_pid_t pr_pgrp;
-	kd_pid_t pr_sid;
-	kd_timeval64_t pr_utime;
-	kd_timeval64_t pr_stime;
-	kd_timeval64_t pr_cutime;
-	kd_timeval64_t pr_cstime;
-	unsigned char pr_regs[1];
-};
-
 struct fixup_reg_info
 {
 	bool is_64bit;
@@ -503,7 +454,11 @@ fixup_reg_pid(GElf_Word type, const char *name, size_t namelen,
 	if (type != NT_PRSTATUS)
 		return 0;
 
-	/* set pr_pid to -cpu if the idle task (0) was running */
+	/*
+	 * set pr_pid to -cpu if the idle task (0) was running.
+	 * oldmem always runs on the target so we don't worry about
+	 * endianness.
+	 */
 	if (fri->is_64bit) {
 		struct kd_elf_prstatus64 *pr = data;
 
@@ -533,7 +488,7 @@ fixup_reg_pid(GElf_Word type, const char *name, size_t namelen,
 }
 
 struct elfc *
-read_oldmem(char *oldmem, char *vmcore)
+read_oldmem(char *oldmem, char *vmcore, char *extra_vminfo)
 {
 	struct list mems;
 	struct mementry *e;
@@ -577,7 +532,7 @@ read_oldmem(char *oldmem, char *vmcore)
 		goto out_err;
 	}
 
-	handle_vminfo_notes(velf, vmci);
+	handle_vminfo_notes(velf, vmci, extra_vminfo);
 	if (vmci[0].found) {
 		page_size = vmci[0].val;
 	} else {

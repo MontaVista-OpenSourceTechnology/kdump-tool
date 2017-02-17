@@ -811,6 +811,53 @@ out:
 }
 
 static int
+mips_task_ptregs(struct kdt_data *d, GElf_Addr task, void *regs)
+{
+	uint64_t reg = task + d->task_thread;
+	static bool missing_resume_reported = false;
+	int rv;
+
+	if (!d->mips_task_resume_found && !missing_resume_reported) {
+		pr_err("MIPS resume function missing from vminfo, first "
+		       "level of stack traceback will be missing.\n");
+		missing_resume_reported = true;
+	}
+
+	if (d->is_64bit) {
+		uint64_t *pt_regs = regs;
+
+		/* Registers 16-23 are the first 8 things in thread_struct. */
+		rv = fetch_vaddr_data_err(d, reg, 8 * 8, pt_regs + 16,
+					  "reg16-23");
+		if (rv)
+			return rv;
+		/* Registers 29-31 are next. */
+		rv = fetch_vaddr_data_err(d, reg + (8 * 8), (3 * 8),
+					  pt_regs + 29, "reg29-21");
+		if (rv)
+			return rv;
+
+		d->store64(pt_regs + 34, d->mips_task_resume);
+	} else {
+		uint32_t *pt_regs = regs;
+
+		/* Registers 16-23 are the first 8 things in thread_struct. */
+		rv = fetch_vaddr_data_err(d, reg, 64, pt_regs + 16,
+					  "reg16-23");
+		if (rv)
+			return rv;
+		/* Registers 29-31 are next. */
+		rv = fetch_vaddr_data_err(d, reg + 64, 24, pt_regs + 29,
+					  "reg29-21");
+		if (rv)
+			return rv;
+		d->store32(pt_regs + 34, d->mips_task_resume);
+	}
+
+	return 0;
+}
+
+static int
 mips_arch_setup(struct elfc *pelf, struct kdt_data *d, void **arch_data)
 {
 	struct mips_walk_data *mwd;
@@ -846,7 +893,7 @@ mips_arch_setup(struct elfc *pelf, struct kdt_data *d, void **arch_data)
 	}
 	memset(mwd, 0, sizeof(*mwd));
 
-	handle_vminfo_notes(pelf, vmci);
+	handle_vminfo_notes(pelf, vmci, d->extra_vminfo);
 	for (i = VREQ; vmci[i].name; i++) { 
 		if (!vmci[i].found) {
 			fprintf(stderr, "%s not present in input file notes, "
@@ -930,6 +977,10 @@ mips_arch_setup(struct elfc *pelf, struct kdt_data *d, void **arch_data)
 
 	mwd->conv32 = d->conv32;
 	mwd->conv64 = d->conv64;
+	d->fetch_ptregs = mips_task_ptregs;
+	if (mwd->is_64bit)
+		d->pt_regs_size = 368;
+	/* Don't know the value for mips32. */
 
 	base_shift = mwd->page_shift;
 	if (mwd->is_64bit) {

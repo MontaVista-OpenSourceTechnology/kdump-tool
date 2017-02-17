@@ -1,0 +1,134 @@
+#
+# This file contains a few gdb macros (user defined commands) to extract
+# useful information from kernel crashdump (kdump) like stack traces of
+# all the processes or a particular process and trapinfo.
+#
+# Code based on kernel: Documentation/kdump/gdbmacros.txt
+
+
+define dmesg
+	set $idx = log_first_idx
+	while $idx != log_next_idx
+		set $entry = (struct log *)(log_buf + $idx)
+		if $entry->len == 0
+			set $idx = 0
+			loop_continue
+		end
+		set $usecs = $entry->ts_nsec / 1000
+		printf "[%05lu.%06lu] ", $usecs / 1000000, $usecs % 1000000
+		set $msg = (char *)($entry + 1)
+		set $i = 0
+		while $i < $entry->text_len
+			printf "%c", *($msg + $i)
+			set $i = $i + 1
+		end
+		printf "\n"
+		set $idx += $entry->len
+	end
+end
+
+document dmesg
+	print the kernel log buffer
+end
+
+define prpid
+	set $t=$arg0
+	set $signal = (struct signal_struct *)($t->signal)
+	set $tty = (struct tty_struct *)($signal->tty)
+
+	if ($tty)
+		set $tty_name = ($tty.name)
+		printf "%d\t%s\t%s\t((struct task_struct *) 0x%llx)\n", \
+			$t.pid, $tty_name, $t.comm, $t
+	else
+		printf "%d\t?\t%s\t((struct task_struct *) 0x%llx)\n", \
+			$t.pid, $t.comm, $t
+	end
+	printf "\tSP:0x%llx  FP:0x%llx\n", $t.thread.reg29, $t.thread.reg30
+end
+document prpid
+	print info for a pid given a task struct
+end
+
+define prthread
+	set $thread=$arg0
+	printf "    %d\t((struct task_struct *) 0x%llx)\n", \
+			$thread.pid, $thread
+	printf "\t    SP:0x%llx  FP:0x%llx\n", $thread.thread.reg29, $thread.thread.reg30
+end
+document prthread
+	print info for a thread given a task struct
+end
+
+define ps
+	set $poff=((size_t)&((struct task_struct *)0)->tasks)
+	set $toff=((size_t)&((struct task_struct *)0)->thread_node)
+	set $init_p=(struct task_struct *)&init_task
+	set $p=$init_p
+	printf  "PID\t tty\t CMD\tTASK_STRUCT\n"	
+
+	while (1)
+		prpid $p
+		set $init_t=&$p->signal.thread_head
+		set $t=$init_t->next
+		while ($t != $init_t)
+			set $tv=(struct task_struct *)(((char *) $t) - $toff)
+			if ($tv != $p)
+				prthread $tv
+			end
+			set $t=$t->next
+		end
+		set $p=(struct task_struct *)((char *)($p->tasks.next) - $poff)
+		if ($p == $init_p)
+			loop_break
+		end
+	end	
+end 
+document ps 
+	Print processes and threads.  Threads for a process are indented
+	underneath it, with just the pid and task struct.
+end
+
+define lsmod
+	set $modules=&modules
+	set $nextoff=(long) &(((struct module *) 0)->list.next)
+	set $head=(long) &modules
+	set $modl=(long) modules.next
+
+	printf "Name                 Base Addr          Module Data\n"
+	while ($modl != $head)
+		set $mod=(struct module *) ($modl - $nextoff)
+		printf "%-20s 0x%12llx ((struct module *) 0x%12llx)\n", \
+			$mod->name, $mod->module_core_rx, $mod
+		set $modl=(long) $mod->list.next
+	end
+end
+document lsmod
+	print list of modules and their info
+end
+
+define thread_vminfo
+	printf "SYMBOL(init_task)=%lx\n", &init_task
+	printf "OFFSET(task.stack)=%ld\n", &((struct task_struct *) 0)->stack
+	printf "OFFSET(task.tasks)=%ld\n", &((struct task_struct *) 0)->tasks
+	printf "OFFSET(task.thread_node)=%ld\n", &((struct task_struct *) 0)->thread_node
+	printf "OFFSET(task.signal)=%ld\n", &((struct task_struct *) 0)->signal
+	printf "OFFSET(task.pid)=%ld\n", &((struct task_struct *) 0)->pid
+	printf "OFFSET(signal.thread_head)=%ld\n", &((struct signal_struct *) 0)->thread_head
+	printf "OFFSET(task.thread)=%ld\n", &((struct task_struct *) 0)->thread
+	printf "SIZE(pt_regs)=%ld\n", sizeof(struct pt_regs)
+	printf "SYMBOL(resume)=%lx\n", resume
+end
+document thread_vminfo
+	Dump information required by kdump-tool to create a gdb thread
+	per kernel thread instead of the default gdb thread per CPU.
+	The vmlinux (with debugging) for the file must be loaded, but
+	the kernel dump is not required.
+end
+
+define kvtop 
+	# TODO kvtop isn't implemented for mips now.
+	set $ret = (ulong)$arg0
+end
+
+

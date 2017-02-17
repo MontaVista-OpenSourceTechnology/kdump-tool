@@ -315,7 +315,7 @@ i386_arch_setup(struct elfc *pelf, struct kdt_data *d, void **arch_data)
 	}
 	memset(md, 0, sizeof(*md));
 
-	handle_vminfo_notes(pelf, vmci);
+	handle_vminfo_notes(pelf, vmci, d->extra_vminfo);
 	if (vmci[0].found)
 		md->pae = vmci[0].val;
 

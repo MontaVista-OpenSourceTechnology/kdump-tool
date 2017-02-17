@@ -11,6 +11,7 @@ kdump-tool \- Kdump dump handling tool
 [\-\-vmcore|-v <vmcore>]
 [\-\-elfclass|-c 32|64]
 [\-\-level|-l all|inuse|user|cache|kernel]
+[\-\-extravminfo|-e <vminfofile>]
 [\-\-debug|-d]
 
 .B kdump-tool
@@ -23,12 +24,15 @@ kdump-tool \- Kdump dump handling tool
 [\-\-elfclass|-c 32|64]
 [\-\-level|-l all|inuse|user|cache|kernel]
 [\-\-vmlinux|-m <vmlinux>]
+[\-\-extravminfo|-e <vminfofile>]
+[\-\-procthreads|-p]
 [\-\-debug|-d]
 
 .B kdump-tool
 [\-\-help] addrandoff [\--help]
 [\-\-vmcore|-v <vmcore>]
 [\-\-vmlinux|-m <vmlinux>]
+[\-\-extravminfo|-e <vminfofile>]
 
 .B kdump-tool
 [\-\-help] makedyn [\--help]
@@ -41,6 +45,7 @@ kdump-tool \- Kdump dump handling tool
 [\-\-vmcore|-v <vmcore>]
 [\-\-intype|-I oldmem|pelf]
 [\-\-is_physical|-p]
+[\-\-extravminfo|-e <vminfofile>]
 <address> <size>
 
 .B kdump-tool
@@ -49,6 +54,7 @@ kdump-tool \- Kdump dump handling tool
 [\-\-vmcore|-v <vmcore>]
 [\-\-intype|-I oldmem|pelf]
 [\-\-physpgd|-P <pgd phys address>]
+[\-\-extravminfo|-e <vminfofile>]
 [\-\-debug|-d]
 <address>
 
@@ -188,6 +194,15 @@ level will dump kernel and cache pages.  The user level will dump
 kernel and user pages.  The inuse level will dump all pages that are
 not free, and all obviously just dumps all pages.
 .TP
+.I "\-\-extravminfo|-e <vminfofile>"
+Add extra symbol and offset information that was not available in the
+kernel dump.  This will override existing information in the kernel
+dump if there are duplicates.
+.TP
+.I "\-\-procthreads|-p"
+Convert processed in the kernel into threads that gdb can understand.
+See "KERNEL PROCESSES TO GDB THREADS" below for more details.
+.TP
 .I "\-\-debug|-d"
 Dump debug information.  Generally only useful if you are debugging
 kdump-tool itself.
@@ -200,6 +215,35 @@ available, and all of physical memory may not be present.  Since
 modules reside in vmalloc and some systems have the pages array in
 vmemmap, it's almost impossible to use gdb on the standard kernel
 coredump.
+
+.SH KERNEL PROCESSES TO GDB THREADS
+kdump-tool can convert every kernel process into a thread that gdb
+can use.  You generally have to use the macro from kdump_gdbinit
+named thread_vminfo to get the extra vminfo file, pass it in to
+kdump-tool with
+.I \-\-extravminfo <file>
+with that file to get the proper symbols.  Then use the
+.I \-\-procthreads
+option to do the conversion.  The procedure would generally be
+
+.RS 4
+Get a physical dump of the kernel.  Physical dumps are generally recommended
+for the target, they are smaller and can be easily processed on the host.
+
+gdb vmlinux
+
+source kdump_gdbinit
+
+thread_vminfo
+
+<save the output to a file name thread_vminfo>
+
+kdump-tool tovelf -I pelf -i pdump -o vdump -e thread_vminfo -p
+
+gdb vmlinux vdump
+.RE
+
+And you should see all the process as threads.
 
 .SH FILES
 /dev/mem, /proc/vmcore

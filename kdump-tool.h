@@ -51,6 +51,9 @@ void subcmd_help(const char *extra, const struct option *longopts,
 
 int parse_memrange(const char *str, uint64_t *start, uint64_t *size);
 
+/* Standard error printing routing. */
+void pr_err(const char *fmt, ...);
+
 /*
  * Copy all the notes from in to out.
  */
@@ -74,7 +77,8 @@ struct vmcoreinfo_data {
 	int found;
 	uint64_t val;
 };
-int handle_vminfo_notes(struct elfc *elf, struct vmcoreinfo_data *vals);
+int handle_vminfo_notes(struct elfc *elf, struct vmcoreinfo_data *vals,
+			char *extra_vminfo);
 #define VMINFO_YN_BASE		-1
 
 #define VMCI_ADDRESS(lbl)						\
@@ -137,7 +141,16 @@ struct archinfo {
 struct archinfo *find_arch(int elfmachine);
 void add_arch(struct archinfo *arch);
 
-struct elfc *read_oldmem(char *oldmem, char *vmcore);
+struct elfc *read_oldmem(char *oldmem, char *vmcore, char *extra_vminfo);
+
+int fetch_vaddr_data_err(struct kdt_data *d, GElf_Addr addr, unsigned int len,
+			 void *out, char *name);
+int fetch_vaddr32(struct kdt_data *d, GElf_Addr addr,
+		  uint32_t *out, char *name);
+int fetch_vaddr64(struct kdt_data *d, GElf_Addr addr,
+		  uint64_t *out, char *name);
+int fetch_vaddrlong(struct kdt_data *d, GElf_Addr addr,
+		    uint64_t *out, char *name);
 
 struct page_range {
 	struct link link;
@@ -155,8 +168,15 @@ enum dump_levels {
 	DUMP_KERNEL
 };
 
+struct cpu_info {
+	unsigned int cpu;
+	int32_t pid;
+	struct cpu_info *next;
+};
+
 struct kdt_data {
 	struct elfc *elf;
+	struct elfc *velf;
 	GElf_Addr pgd;
 	struct archinfo *arch;
 	void *arch_data;
@@ -168,6 +188,14 @@ struct kdt_data {
 
 	uint64_t (*conv64)(void *in);
 	uint32_t (*conv32)(void *in);
+	void (*store64)(void *out, uint64_t val);
+	void (*store32)(void *out, uint32_t val);
+	int (*fetch_ptregs)(struct kdt_data *d, GElf_Addr task, void *regs);
+
+	struct cpu_info *cpus;
+	unsigned int cpunum;
+
+	char *extra_vminfo;
 
 	unsigned int list_head_size;
 	unsigned int list_head_next_offset;
@@ -211,9 +239,21 @@ struct kdt_data {
 	unsigned int free_list_offset;
 	unsigned int free_list_length;
 
+	/* Offsets for task struct and friends. */
+	unsigned int task_stack;
+	unsigned int task_tasks_next;
+	unsigned int task_thread_node;
+	unsigned int task_signal;
+	unsigned int signal_thread_head;
+	unsigned int task_pid;
+	unsigned int task_thread;
+	bool mips_task_resume_found;
+	uint64_t mips_task_resume;
+
 	/* Set by arch code. */
 	unsigned int section_size_bits;
 	unsigned int max_physmem_bits;
+	unsigned int pt_regs_size;
 
 	/* Other */
 	unsigned int pages_per_section;
@@ -248,5 +288,54 @@ extern struct archinfo i386_arch;
 extern struct archinfo mips_arch;
 extern struct archinfo arm_arch;
 extern struct archinfo ppc32_arch;
+
+/*
+ * All the following structures are stolen and modified from
+ * include/linux/elfcore.h and adjusted so they can work cross.
+ */
+struct kd_elf_siginfo
+{
+	int32_t	si_signo;			/* signal number */
+	int32_t	si_code;			/* extra code */
+	int32_t	si_errno;			/* errno */
+};
+
+typedef int32_t kd_pid_t;
+typedef struct { int32_t tv_sec; int32_t tv_usec; } kd_timeval32_t;
+typedef struct { int64_t tv_sec; int64_t tv_usec; } kd_timeval64_t;
+
+struct kd_elf_prstatus32
+{
+	struct kd_elf_siginfo pr_info;
+	int16_t	pr_cursig;
+	uint32_t pr_sigpend;
+	uint32_t pr_sighold;
+	kd_pid_t pr_pid;
+	kd_pid_t pr_ppid;
+	kd_pid_t pr_pgrp;
+	kd_pid_t pr_sid;
+	kd_timeval32_t pr_utime;
+	kd_timeval32_t pr_stime;
+	kd_timeval32_t pr_cutime;
+	kd_timeval32_t pr_cstime;
+	/* unsigned char pr_regs[n]; */
+};
+
+struct kd_elf_prstatus64
+{
+	struct kd_elf_siginfo pr_info;
+	int16_t	pr_cursig;
+	uint64_t pr_sigpend;
+	uint64_t pr_sighold;
+	kd_pid_t pr_pid;
+	kd_pid_t pr_ppid;
+	kd_pid_t pr_pgrp;
+	kd_pid_t pr_sid;
+	kd_timeval64_t pr_utime;
+	kd_timeval64_t pr_stime;
+	kd_timeval64_t pr_cutime;
+	kd_timeval64_t pr_cstime;
+	/* unsigned char pr_regs[n]; */
+};
 
 #endif /* KDUMPTOOL_H */

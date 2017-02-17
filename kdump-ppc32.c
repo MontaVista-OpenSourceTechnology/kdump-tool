@@ -225,7 +225,7 @@ ppc32_arch_setup(struct elfc *pelf, struct kdt_data *d, void **arch_data)
 
 	md->pelf = pelf;
 
-	handle_vminfo_notes(pelf, vmci);
+	handle_vminfo_notes(pelf, vmci, d->extra_vminfo);
 
 	for (i = 0; vmci[i].name; i++) {
 
