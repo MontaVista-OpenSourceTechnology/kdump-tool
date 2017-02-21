@@ -1143,13 +1143,13 @@ read_sparse_maps(struct kdt_data *d, struct vmcoreinfo_data *vmci, bool extreme)
 		}
 	}
 
-	VMCI_CHECK_FOUND(vmci, SYMBOL, contig_page_data);
-	pglist = read_pglist(d, vmci[VMCI_SYMBOL_contig_page_data].val);
-	if (!pglist)
-		return -1;
-	rv = process_pglist_free_lists(d, pglist);
-
-	free(pglist);
+	if (vmci[VMCI_SYMBOL_contig_page_data].found) {
+		pglist = read_pglist(d, vmci[VMCI_SYMBOL_contig_page_data].val);
+		if (!pglist)
+			return -1;
+		rv = process_pglist_free_lists(d, pglist);
+		free(pglist);
+	}
 
 out_err:
 	if (mem_sections)
@@ -1321,10 +1321,7 @@ read_page_maps(struct kdt_data *d)
 	VMCI_CHECK_FOUND(vmci, SIZE, free_area);
 	d->free_area_size = vmci[VMCI_SIZE_free_area].val;
 
-	if (!vmci[VMCI_SYMBOL_mem_map].found) {
-		/* Discontiguous memory */
-		rv = read_discontig_maps(d, vmci);
-	} else if (vmci[VMCI_SYMBOL_mem_section].found) {
+	if (vmci[VMCI_SYMBOL_mem_section].found) {
 		bool is_sparse_extreme;
 		/* Sparse memory */
 
@@ -1343,6 +1340,9 @@ read_page_maps(struct kdt_data *d)
 		else
 			is_sparse_extreme = false;
 		rv = read_sparse_maps(d, vmci, is_sparse_extreme);
+	} else if (!vmci[VMCI_SYMBOL_mem_map].found) {
+		/* Discontiguous memory */
+		rv = read_discontig_maps(d, vmci);
 	} else {
 		/* Flat Memory */
 		rv = read_flat_page_maps(d, vmci);
