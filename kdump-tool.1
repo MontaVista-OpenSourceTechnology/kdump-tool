@@ -201,7 +201,7 @@ dump if there are duplicates.
 .TP
 .I "\-\-procthreads|-p"
 Convert processed in the kernel into threads that gdb can understand.
-See "KERNEL PROCESSES TO GDB THREADS" below for more details.
+See "PROCESSES TO GDB THREADS" below for more details.
 .TP
 .I "\-\-debug|-d"
 Dump debug information.  Generally only useful if you are debugging
@@ -216,7 +216,7 @@ modules reside in vmalloc and some systems have the pages array in
 vmemmap, it's almost impossible to use gdb on the standard kernel
 coredump.
 
-.SH KERNEL PROCESSES TO GDB THREADS
+.SH PROCESSES TO GDB THREADS
 kdump-tool can convert every kernel process into a thread that gdb
 can use.  You generally have to use the macro from kdump_gdbinit
 named thread_vminfo to get the extra vminfo file, pass it in to
@@ -230,15 +230,20 @@ option to do the conversion.  The procedure would generally be
 Get a physical dump of the kernel.  Physical dumps are generally recommended
 for the target, they are smaller and can be easily processed on the host.
 
-gdb vmlinux
+<Convert it to a normal virtual dump.  This is required because if the
+ kernel is relocated, you need relocated symbols.>
+
+kdump-tool tovelf -I pelf -i pdump -m vmlinux -o vdump
+
+gdb vmlinux vdump
 
 source kdump_gdbinit
 
-thread_vminfo
+thread_vminfo_<arch>  # <arch> is either mips or x86_64
 
-<save the output to a file name thread_vminfo>
+<save the output to a file name thread_vminfo and quit gdb>
 
-kdump-tool tovelf -I pelf -i pdump -o vdump -e thread_vminfo -p
+kdump-tool tovelf -I pelf -i pdump -m vmlinux -o vdump -e thread_vminfo -p
 
 gdb vmlinux vdump
 .RE
@@ -250,6 +255,79 @@ Note that you do
 get the userland traceback here.  You get the
 kernel side of the traceback.
 
+.SH PROCESSES TO GDB THREADS EXTRAS FOR X86
+Unfortuantely, x86 doesn't provide all the information you need to
+properly generate threads for each process.  Two additional pieces
+of information are required: The context switch point and the value
+of the BP register at context switch.
+
+The kernel does not store the value of the BP register at context
+switch, and that would slow down context switches a little so it's
+frowned upon.  So to get this, you must calculate the frame size
+of __schedule and set that in thread_vminfo file.
+
+To calculate it, load the vmlinux file into gdb (as before) and do
+
+.RS 4
+x/20i __schedule
+.RE
+
+You should see something like:
+
+.RS 4
+0xffffffff81744290 <__schedule>:	push   %rbp
+0xffffffff81744291 <__schedule+1>:	mov    $0xdf40,%rax
+0xffffffff81744298 <__schedule+8>:	mov    %gs:0x9908,%rdx
+0xffffffff817442a1 <__schedule+17>:	mov    %rsp,%rbp
+0xffffffff817442a4 <__schedule+20>:	push   %r15
+0xffffffff817442a6 <__schedule+22>:	push   %r14
+0xffffffff817442a8 <__schedule+24>:	push   %r13
+0xffffffff817442aa <__schedule+26>:	push   %r12
+0xffffffff817442ac <__schedule+28>:	push   %rbx
+0xffffffff817442ad <__schedule+29>:	sub    $0x48,%rsp
+.RE
+
+You need to count how much the stack is decremented here after the
+push of %rbp.  On x86_64, each push is 8 bytes, then you see a direct
+subtraction from %rsp.  So there are five pushes and then another 72
+(0x48) bytes subtracted, so this is 72 + (5 * 8), or 112 bytes.  Then
+set the
+
+.RS 4
+SIZE(context_switch_frame)=1
+.RE
+
+in your thread_vminfo file from one to the value you calculate.
+
+If you have the x86 patch in the kernel-patches directory applied to
+your kernel, then it should contain the code to add the context switch
+point.  If you don't then all is not lost, you can find it.  First
+convert your physical coredump into a normal virtual coredump and load
+it in to gdb.  (You have to actually do this with a coredump because
+the kernel can be relocated and you need to know the relocated symbol
+point.)  Then do:
+
+.RS 4
+x/10i __schedule
+.RE
+
+Just keep hitting return until you find a call to __switch_to, like:
+
+.RS 4
+0xffffffff81744513 <__schedule+643>:	mov    %rsp,0x408(%rdi)
+0xffffffff8174451a <__schedule+650>:	mov    0x408(%rsi),%rsp
+0xffffffff81744521 <__schedule+657>:	callq  0xffffffff810013c0 <__switch_to>
+0xffffffff81744526 <__schedule+662>:	mov    %gs:0x9900,%rsi
+.RE
+
+Get the location of the instruction right before the callq and add:
+
+.RS 4
+SYMBOL(__thread_sleep_point)=ffffffff8174451a
+.RE
+
+to your thread_vminfo file.
+
 .SH FILES
 /dev/mem, /proc/vmcore
 
@@ -260,6 +338,8 @@ kexec(8)
 
 .SH "KNOWN PROBLEMS"
 This is still fairly primitive and doesn't support all architectures.
+
+Process to gdb thread processing only works for MIPS and X86_64.
 
 .SH AUTHOR
 .PP

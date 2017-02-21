@@ -249,6 +249,12 @@ struct kdt_data {
 	unsigned int task_thread;
 	bool mips_task_resume_found;
 	uint64_t mips_task_resume;
+	bool thread_sp_found; /* x86-only for now, maybe others. */
+	uint64_t thread_sp;
+	bool x86___thread_sleep_point_found;
+	uint64_t x86___thread_sleep_point;
+	bool x86_context_switch_frame_size_found;
+	uint64_t x86_context_switch_frame_size;
 
 	/* Set by arch code. */
 	unsigned int section_size_bits;

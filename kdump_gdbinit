@@ -44,7 +44,7 @@ define prpid
 		printf "%d\t?\t%s\t((struct task_struct *) 0x%llx)\n", \
 			$t.pid, $t.comm, $t
 	end
-	printf "\tSP:0x%llx  FP:0x%llx\n", $t.thread.reg29, $t.thread.reg30
+	#printf "\tSP:0x%llx  FP:0x%llx\n", $t.thread.reg29, $t.thread.reg30
 end
 document prpid
 	print info for a pid given a task struct
@@ -54,7 +54,7 @@ define prthread
 	set $thread=$arg0
 	printf "    %d\t((struct task_struct *) 0x%llx)\n", \
 			$thread.pid, $thread
-	printf "\t    SP:0x%llx  FP:0x%llx\n", $thread.thread.reg29, $thread.thread.reg30
+	#printf "\t    SP:0x%llx  FP:0x%llx\n", $thread.thread.reg29, $thread.thread.reg30
 end
 document prthread
 	print info for a thread given a task struct
@@ -107,23 +107,53 @@ document lsmod
 	print list of modules and their info
 end
 
-define thread_vminfo
+define thread_vminfo_base
 	printf "SYMBOL(init_task)=%lx\n", &init_task
-	printf "OFFSET(task.stack)=%ld\n", &((struct task_struct *) 0)->stack
-	printf "OFFSET(task.tasks)=%ld\n", &((struct task_struct *) 0)->tasks
-	printf "OFFSET(task.thread_node)=%ld\n", &((struct task_struct *) 0)->thread_node
-	printf "OFFSET(task.signal)=%ld\n", &((struct task_struct *) 0)->signal
-	printf "OFFSET(task.pid)=%ld\n", &((struct task_struct *) 0)->pid
-	printf "OFFSET(signal.thread_head)=%ld\n", &((struct signal_struct *) 0)->thread_head
-	printf "OFFSET(task.thread)=%ld\n", &((struct task_struct *) 0)->thread
+	printf "OFFSET(task_struct.stack)=%ld\n", &((struct task_struct *) 0)->stack
+	printf "OFFSET(task_struct.tasks)=%ld\n", &((struct task_struct *) 0)->tasks
+	printf "OFFSET(task_struct.thread_node)=%ld\n", &((struct task_struct *) 0)->thread_node
+	printf "OFFSET(task_struct.signal)=%ld\n", &((struct task_struct *) 0)->signal
+	printf "OFFSET(task_struct.pid)=%ld\n", &((struct task_struct *) 0)->pid
+	printf "OFFSET(signal_struct.thread_head)=%ld\n", &((struct signal_struct *) 0)->thread_head
+	printf "OFFSET(task_struct.thread)=%ld\n", &((struct task_struct *) 0)->thread
 	printf "SIZE(pt_regs)=%ld\n", sizeof(struct pt_regs)
-	printf "SYMBOL(resume)=%lx\n", resume
 end
-document thread_vminfo
+document thread_vminfo_base
 	Dump information required by kdump-tool to create a gdb thread
 	per kernel thread instead of the default gdb thread per CPU.
 	The vmlinux (with debugging) for the file must be loaded, but
 	the kernel dump is not required.
+
+	This is the base version that the arch-specific versions call
+end
+
+define thread_vminfo_mips
+	thread_vminfo_base
+	printf "SYMBOL(resume)=%lx\n", resume
+end
+document thread_vminfo_mips
+	Dump information required by kdump-tool to create a gdb thread
+	per kernel thread instead of the default gdb thread per CPU.
+	This is the MIPS version.  See thread_vminfo_base for more
+	details.
+end
+
+define thread_vminfo_x86_64
+	thread_vminfo_base
+	# Add this in if you don't have it.
+	#printf "SYMBOL(__thread_sleep_point)=0\n"
+	printf "OFFSET(thread_struct.sp)=%ld\n", &((struct thread_struct *) 0)->sp
+	printf "SIZE(context_switch_frame)=1\n"
+end
+document thread_vminfo_x86_64
+	Dump information required by kdump-tool to create a gdb thread
+	per kernel thread instead of the default gdb thread per CPU.
+	This is the MIPS version.  See thread_vminfo_base for more
+	details.
+
+	Make sure to fix SIZE(context_switch_frame) and possibly
+	SYMBOL(__thread_sleep_point) to be the actual values for your
+	system.  Read the man page for details.
 end
 
 define kvtop 

@@ -2087,16 +2087,19 @@ add_cpu_info(GElf_Word type, const char *name, size_t namelen,
 
 enum thread_info_labels {
 	VMCI_SYMBOL_resume, /* for MIPS */
+	VMCI_SYMBOL___thread_sleep_point, /* for X86 */
+	VMCI_OFFSET_thread_struct__sp, /* for X86 */
+	VMCI_SIZE_context_switch_frame, /* For x86 */
 	/* Begin required elements. */
 #define KV_REQ VMCI_SYMBOL_init_task
 	VMCI_SYMBOL_init_task,
-	VMCI_OFFSET_task__stack,
-	VMCI_OFFSET_task__tasks,
-	VMCI_OFFSET_task__thread_node,
-	VMCI_OFFSET_task__signal,
-	VMCI_OFFSET_task__pid,
-	VMCI_OFFSET_task__thread,
-	VMCI_OFFSET_signal__thread_head
+	VMCI_OFFSET_task_struct__stack,
+	VMCI_OFFSET_task_struct__tasks,
+	VMCI_OFFSET_task_struct__thread_node,
+	VMCI_OFFSET_task_struct__signal,
+	VMCI_OFFSET_task_struct__pid,
+	VMCI_OFFSET_task_struct__thread,
+	VMCI_OFFSET_signal_struct__thread_head
 };
 
 typedef int (*thread_handler)(struct kdt_data *d, GElf_Addr task,
@@ -2146,14 +2149,17 @@ handle_kernel_processes_threads(struct kdt_data *d, thread_handler handler,
 {
 	struct vmcoreinfo_data vmci[] = {
 		VMCI_SYMBOL(resume),
+		VMCI_SYMBOL(__thread_sleep_point),
+		VMCI_OFFSET(thread_struct, sp),
+		VMCI_SIZE(context_switch_frame),
 		VMCI_SYMBOL(init_task),
-		VMCI_OFFSET(task, stack),
-		VMCI_OFFSET(task, tasks),
-		VMCI_OFFSET(task, thread_node),
-		VMCI_OFFSET(task, signal),
-		VMCI_OFFSET(task, pid),
-		VMCI_OFFSET(task, thread),
-		VMCI_OFFSET(signal, thread_head),
+		VMCI_OFFSET(task_struct, stack),
+		VMCI_OFFSET(task_struct, tasks),
+		VMCI_OFFSET(task_struct, thread_node),
+		VMCI_OFFSET(task_struct, signal),
+		VMCI_OFFSET(task_struct, pid),
+		VMCI_OFFSET(task_struct, thread),
+		VMCI_OFFSET(signal_struct, thread_head),
 		{ NULL }
 	};
 	uint64_t task_addr, init_task_addr;
@@ -2171,17 +2177,30 @@ handle_kernel_processes_threads(struct kdt_data *d, thread_handler handler,
 		}
 	}
 
-	d->task_stack = vmci[VMCI_OFFSET_task__stack].val;
-	d->task_tasks_next = vmci[VMCI_OFFSET_task__tasks].val +
+	d->task_stack = vmci[VMCI_OFFSET_task_struct__stack].val;
+	d->task_tasks_next = vmci[VMCI_OFFSET_task_struct__tasks].val +
 		d->list_head_next_offset;
-	d->task_thread_node = vmci[VMCI_OFFSET_task__thread_node].val;
-	d->task_signal = vmci[VMCI_OFFSET_task__signal].val;
-	d->task_pid = vmci[VMCI_OFFSET_task__pid].val;
-	d->signal_thread_head = vmci[VMCI_OFFSET_signal__thread_head].val;
-	d->task_thread = vmci[VMCI_OFFSET_task__thread].val;
+	d->task_thread_node = vmci[VMCI_OFFSET_task_struct__thread_node].val;
+	d->task_signal = vmci[VMCI_OFFSET_task_struct__signal].val;
+	d->task_pid = vmci[VMCI_OFFSET_task_struct__pid].val;
+	d->signal_thread_head = vmci[VMCI_OFFSET_signal_struct__thread_head].val;
+	d->task_thread = vmci[VMCI_OFFSET_task_struct__thread].val;
 	d->mips_task_resume_found = vmci[VMCI_SYMBOL_resume].found;
 	if (d->mips_task_resume_found)
 		d->mips_task_resume = vmci[VMCI_SYMBOL_resume].val;
+	d->x86___thread_sleep_point_found =
+		vmci[VMCI_SYMBOL___thread_sleep_point].found;
+	if (d->x86___thread_sleep_point_found)
+		d->x86___thread_sleep_point =
+			vmci[VMCI_SYMBOL___thread_sleep_point].val;
+	d->thread_sp_found = vmci[VMCI_OFFSET_thread_struct__sp].found;
+	if (d->thread_sp_found)
+		d->thread_sp = vmci[VMCI_OFFSET_thread_struct__sp].val;
+	d->x86_context_switch_frame_size_found =
+		vmci[VMCI_SIZE_context_switch_frame].found;
+	if (d->x86_context_switch_frame_size_found)
+		d->x86_context_switch_frame_size =
+			vmci[VMCI_SIZE_context_switch_frame].val;
 
 	init_task_addr = vmci[VMCI_SYMBOL_init_task].val;
 

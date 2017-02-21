@@ -1,0 +1,51 @@
+From bcc3fd4b05862705ceaed003f3fcc5c506f58b2f Mon Sep 17 00:00:00 2001
+From: Corey Minyard <cminyard@mvista.com>
+Date: Wed, 22 Feb 2017 15:48:12 -0600
+Subject: [PATCH] x86: Provide context switch point for kdump process to kernel
+ threads
+
+In order to properly handle generating gdb kernel threads for each
+kernel process, you must know the context switch point to tell gdb
+what the instruction pointer is.  So create a symbol and export
+in in the VMCOREINFO.
+
+Signed-off-by: Corey Minyard <cminyard@mvista.com>
+---
+ arch/x86/include/asm/switch_to.h   | 2 ++
+ arch/x86/kernel/machine_kexec_64.c | 3 +++
+ 2 files changed, 5 insertions(+)
+
+diff --git a/arch/x86/include/asm/switch_to.h b/arch/x86/include/asm/switch_to.h
+index a4f0a8a..b808a54 100644
+--- a/arch/x86/include/asm/switch_to.h
++++ b/arch/x86/include/asm/switch_to.h
+@@ -105,6 +105,8 @@ do {									\
+ 	asm volatile(SAVE_CONTEXT					  \
+ 	     "movq %%rsp,%P[threadrsp](%[prev])\n\t" /* save RSP */	  \
+ 	     "movq %P[threadrsp](%[next]),%%rsp\n\t" /* restore RSP */	  \
++	     "__thread_sleep_point:\n"					  \
++	     ".globl __thread_sleep_point\n"				  \
+ 	     "call __switch_to\n\t"					  \
+ 	     "movq "__percpu_arg([current_task])",%%rsi\n\t"		  \
+ 	     __switch_canary						  \
+diff --git a/arch/x86/kernel/machine_kexec_64.c b/arch/x86/kernel/machine_kexec_64.c
+index 679cef0..ce20b0d 100644
+--- a/arch/x86/kernel/machine_kexec_64.c
++++ b/arch/x86/kernel/machine_kexec_64.c
+@@ -270,10 +270,13 @@ void machine_kexec(struct kimage *image)
+ 	__ftrace_enabled_restore(save_ftrace_enabled);
+ }
+ 
++extern void __thread_sleep_point();
++
+ void arch_crash_save_vmcoreinfo(void)
+ {
+ 	VMCOREINFO_SYMBOL(phys_base);
+ 	VMCOREINFO_SYMBOL(init_level4_pgt);
++	VMCOREINFO_SYMBOL(__thread_sleep_point);
+ 
+ #ifdef CONFIG_NUMA
+ 	VMCOREINFO_SYMBOL(node_data);
+-- 
+2.7.4
+

@@ -216,6 +216,68 @@ struct x86_64_data
 	bool dummy;
 };
 
+struct x86_64_pt_regs {
+	uint64_t r15;
+	uint64_t r14;
+	uint64_t r13;
+	uint64_t r12;
+	uint64_t rbp;
+	uint64_t rbx;
+	uint64_t r11;
+	uint64_t r10;
+	uint64_t r9;
+	uint64_t r8;
+	uint64_t rax;
+	uint64_t rcx;
+	uint64_t rdx;
+	uint64_t rsi;
+	uint64_t rdi;
+	uint64_t orig_rax;
+	uint64_t rip;
+	uint64_t cs;
+	uint64_t eflags;
+	uint64_t rsp;
+	uint64_t ss;
+	uint64_t fs_base;
+	uint64_t gs_base;
+	uint64_t ds;
+	uint64_t es;
+	uint64_t fs;
+	uint64_t gs;
+};
+
+static int
+x86_64_task_ptregs(struct kdt_data *d, GElf_Addr task, void *regs)
+{
+	uint64_t reg = task + d->task_thread;
+	struct x86_64_pt_regs *pt_regs = regs;
+	int rv;
+
+	if (!d->thread_sp_found || !d->x86___thread_sleep_point_found ||
+	    !d->x86_context_switch_frame_size_found) {
+		pr_err("x86-specific thread symbols not found, ptregs cannot "
+		       "be extracted.\n");
+		return -1;
+	}
+	if (d->x86_context_switch_frame_size == 1) {
+		pr_err("You must set SIZE(context_switch_frame) in your "
+		       "extracted symbols.  See the man page for details.\n");
+		return -1;
+	}
+
+	pt_regs->rip = d->x86___thread_sleep_point;
+	rv = fetch_vaddr64(d, reg + d->thread_sp, &pt_regs->rsp, "thread.sp");
+	if (rv) {
+		pr_err("Unable to fetch SP from task struct\n");
+		return rv;
+	}
+	pt_regs->rbp = pt_regs->rsp - d->x86_context_switch_frame_size;
+
+	/* We should only need the EIP, EBP and ESP. */
+
+	return 0;
+}
+
 static int
 x86_64_arch_setup(struct elfc *pelf, struct kdt_data *d, void **arch_data)
 {
@@ -231,6 +293,9 @@ x86_64_arch_setup(struct elfc *pelf, struct kdt_data *d, void **arch_data)
 	d->section_size_bits = 27;
 	d->max_physmem_bits = 46; /* Good for 2.6.31 and later */
 
+	/* I'm not sure what the 8 bytes at the end is, but it's required. */
+	d->pt_regs_size = sizeof(struct x86_64_pt_regs) + 8;
+	d->fetch_ptregs = x86_64_task_ptregs;
 	return 0;
 }
 
