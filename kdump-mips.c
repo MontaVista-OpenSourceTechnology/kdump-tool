@@ -977,9 +977,10 @@ mips_arch_setup(struct elfc *pelf, struct kdt_data *d, void **arch_data)
 
 	mwd->conv32 = d->conv32;
 	mwd->conv64 = d->conv64;
-	d->fetch_ptregs = mips_task_ptregs;
-	if (mwd->is_64bit)
+	if (mwd->is_64bit) {
+		d->fetch_ptregs = mips_task_ptregs;
 		d->pt_regs_size = 368;
+	}
 	/* Don't know the value for mips32. */
 
 	base_shift = mwd->page_shift;
