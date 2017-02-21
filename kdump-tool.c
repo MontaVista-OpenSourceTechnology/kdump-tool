@@ -1551,6 +1551,8 @@ process_page(struct velf_data *dpage,
 		dpr("Page not present, paddr %llx vaddr %llx\n",
 		    (unsigned long long) paddr,
 		    (unsigned long long) vaddr);
+		set_pfn_skipped(d, range, pfn);
+		d->skipped_not_present++;
 		return 0;
 	}
 
