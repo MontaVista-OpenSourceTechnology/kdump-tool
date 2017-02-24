@@ -532,6 +532,10 @@ read_oldmem(char *oldmem, char *vmcore, char *extra_vminfo)
 		goto out_err;
 	}
 
+	/* If a /dev/mem file wasn't supplied, just use /proc/vmcore. */
+	if (!oldmem)
+		return velf;
+
 	handle_vminfo_notes(velf, vmci, extra_vminfo);
 	if (vmci[0].found) {
 		page_size = vmci[0].val;

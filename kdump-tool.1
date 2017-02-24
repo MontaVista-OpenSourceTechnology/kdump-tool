@@ -67,7 +67,9 @@ coredumps into something gdb can understand.
 In a kdump crash kernel, there are two files that let you extract
 information about the kernel that just crashed: /dev/mem and
 /proc/vmcore.  /dev/mem is a raw file holding an image of the physical
-memory of the system, including the previous host's memory.
+memory of the system, including the previous host's memory.  Normally
+this is not used, because /proc/vmcore also has a map of the memory
+and the data is pulled from there.
 /proc/vmcore is a kernel coredump plus some extra information.  (See
 .BR RATONALE
 for why this coredump is not sufficient.)
@@ -76,17 +78,21 @@ for why this coredump is not sufficient.)
 deals with two other types of files, both elf files.  Physical memory
 elf files (pelf) and virtual memory elf files (velf).  A pelf file
 holds a physical memory coredump, basically what comes out of
-/dev/mem in elf format.  Note that
+/proc/vmcore, but with all the unnecessary pages removed.  Note that
 .BR kdump-tool
 will get the physical memory ranges for the old kernel out of
 /proc/vmcore, if available, and only store the necessary ranges.
+
+Note that you can just copy /proc/vmcore and use that as a pelf file
+if you don't want to have kdump-tool on the target.  But it will
+contain all of memory, so it will be a very large file.
 
 A velf file holds a virtual memory coredump, this is in a format that
 gdb can load load and use.  gdb needs the virtual kernel addresses to
 work.
 
 .BR "kdump-tool topelf -o <pelf file>"
-will process /dev/mem and /proc/vmcore into a pelf file.  This is
+will process /proc/vmcore into a pelf file.  This is
 generally preferred on a target system, pelf files are usually smaller
 than velf files and they are quicker to process.  Plus a velf file may
 not have all of physical memory, in case you are in a desperate
@@ -96,8 +102,8 @@ will go to standard output if you don't specify -o.
 .BR "kdump-tool tovelf -i <pelf file> -o <velf file>"
 will process the pelf file into a velf file.
 
-.BR "kdump-tool tovelf -I outmem -o <velf file>"
-will process /dev/mem and /dev/vmcore directly into a velf file.
+.BR "kdump-tool tovelf -I oldmem -o <velf file>"
+will process /proc/vmcore directly into a velf file.
 
 For
 .BR gdb
@@ -143,7 +149,8 @@ subcommand.  This only works on physical memory files.
 Output help.
 .TP
 .I "\-\-oldmem|\-i <oldmem>"
-Set the location of the oldmem file.  The default -s /dev/mem.
+Set the location of the oldmem file.  The default is unused, the memory is
+pulled from the vmcore.
 .TP
 .I "\-\-outfile|-o <output file>"
 Set the output file, output will go to stdout if this is not supplied.
@@ -157,13 +164,15 @@ load offset for a randomized base kernel.
 .TP
 .I "\-\-infile|\-i <oldmem or pelf>"
 Set the location of the input file for converting to velf.  This can
-either be a raw memory file (/dev/mem by default) if
-.BR \-I outmem
-is specified.  If
-.BR \-I outmem
-is not given, then this parameter is required.
+either be a raw memory file (like /dev/mem) if
+.BR \-I oldmem
+is specified.  Normally this is not used with oldmem, it will pull the
+data from the vmcore if this is not specified.  If
+.BR \-I oldmem
+is not given, then this parameter is required and should be a physical
+elf file.
 .TP
-.I "\-\-intype|-I outmem|pelf"
+.I "\-\-intype|-I oldmem|pelf"
 Set the input file time for conversion to velf.
 .TP
 .I "\-\-physpgd|-P <pgd phys address>"

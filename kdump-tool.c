@@ -71,7 +71,6 @@ void pr_err(const char *fmt, ...)
 	va_end(ap);
 }
 
-#define DEFAULT_OLDMEM "/dev/mem"
 void
 subcmd_usage(const char *error, ...)
 {
@@ -1710,7 +1709,7 @@ static int
 topelf(int argc, char *argv[])
 {
 	char *outfile = NULL;
-	char *oldmem = DEFAULT_OLDMEM;
+	char *oldmem = NULL;
 	char *vmcore = "/proc/vmcore";
 	static const struct option longopts[] = {
 		{ "help",	no_argument,		NULL, 'h' },
@@ -1725,7 +1724,7 @@ topelf(int argc, char *argv[])
 	};
 	static const char *helpstr[] = {
 		"This info",
-		"File to use instead of /dev/mem",
+		"File to use for raw memory (like /dev/mem), unused by default",
 		"File send output to instead of stdout",
 		"The vmcore file, defaults to /proc/vmcore",
 		"Set the elfclass (either 32 or 64)",
@@ -2331,7 +2330,7 @@ tovelf(int argc, char *argv[])
 	};
 	static const char *helpstr[] = {
 		"This info",
-		"The input file, defaults to /dev/mem if intype is oldmem,"
+		"The input file, defaults to unused if intype is oldmem,"
 		" otherwise required",
 		"File send output to, stdout if not specified",
 		"The vmcore file, defaults to /proc/vmcore, only for oldmem",
@@ -2462,8 +2461,6 @@ tovelf(int argc, char *argv[])
 	}
 
 	if (do_oldmem) {
-		if (!infile)
-			infile = DEFAULT_OLDMEM;
 		d->elf = read_oldmem(infile, vmcore, d->extra_vminfo);
 		if (!d->elf)
 			goto out_err;
@@ -2914,8 +2911,8 @@ dumpmem(int argc, char *argv[])
 	};
 	static const char *helpstr[] = {
 		"This info",
-		"The input file, defaults to /dev/mem if intype is oldmem, "
-		"otherwise required",
+		"The input file, defaults to unused if intype is oldmem,"
+		" otherwise required",
 		"The vmcore file, defaults to /proc/vmcore, only for oldmem",
 		"The file type, either pelf or oldmem, defaults to pelf",
 		"Is the address physical or virtual?",
@@ -3013,8 +3010,6 @@ dumpmem(int argc, char *argv[])
 	}
 
 	if (do_oldmem) {
-		if (!infile)
-			infile = DEFAULT_OLDMEM;
 		elf = read_oldmem(infile, vmcore, extra_vminfo);
 		if (!elf)
 			goto out_err;
@@ -3106,8 +3101,8 @@ virttophys(int argc, char *argv[])
 	};
 	static const char *helpstr[] = {
 		"This info",
-		"The input file, defaults to /dev/mem if intype is oldmem, "
-			"otherwise required",
+		"The input file, defaults to unused if intype is oldmem,"
+		" otherwise required",
 		"File send output to, stdout if not specified",
 		"The vmcore file, defaults to /proc/vmcore, only for oldmem",
 		"The file type, either pelf or oldmem, defaults to pelf",
@@ -3206,8 +3201,6 @@ virttophys(int argc, char *argv[])
 	}
 
 	if (do_oldmem) {
-		if (!infile)
-			infile = DEFAULT_OLDMEM;
 		d->elf = read_oldmem(infile, vmcore, d->extra_vminfo);
 		if (!d->elf)
 			goto out_err;
