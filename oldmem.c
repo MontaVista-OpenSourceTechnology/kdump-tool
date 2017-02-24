@@ -366,72 +366,6 @@ out_err:
 	goto out;
 }
 
-/*
- * Once we process vmcore, we don't have a good way to find the physical
- * address of the page directory, but it's required for doing memory walks.
- * Figure it out now and add it to the notes.
- */
-static int
-add_phys_pgd_ptr(struct elfc *elf, struct elfc *velf, GElf_Addr virt_pgdir)
-{
-	int rv;
-	GElf_Addr phys_pgdir;
-	char buf[128];
-
-	rv = elfc_vmem_to_pmem(velf, virt_pgdir, &phys_pgdir);
-	if (rv == -1) {
-		int err = elfc_get_errno(velf);
-		struct archinfo *arch;
-		void *arch_data;
-
-		/*
-		 * This is a cheap hack.  kexec on some arches doesn't
-		 * properly add the vaddr.  There is an arch hack
-		 * for those, so look it up.
-		 */
-		arch = find_arch(elfc_getmachine(velf));
-		if (!arch) {
-			fprintf(stderr, "Unknown ELF machine in input"
-				" file: %d\n", elfc_getmachine(velf));
-			return -1;
-		}
-
-		if (arch->setup_arch_pelf) {
-			struct kdt_data d;
-
-			memset(&d, 0, sizeof(d));
-			rv = arch->setup_arch_pelf(velf, &d, &arch_data);
-			if (rv == -1)
-				return -1;
-		}
-
-		rv = -1;
-		if (arch->vmem_to_pmem)
-			rv = arch->vmem_to_pmem(velf, virt_pgdir,
-						&phys_pgdir, arch_data);
-
-		arch->cleanup_arch_data(arch_data);
-
-		if (rv == -1) {
-			fprintf(stderr, "Error getting swapper_pg_dir "
-				"phys addr: %s\n",
-				strerror(err));
-			return -1;
-		}
-	}
-	sprintf(buf, "ADDRESS(phys_pgd_ptr)=%llx\n",
-		(unsigned long long) phys_pgdir);
-	rv = elfc_add_note(elf, 0, "VMCOREINFO", 12,
-			   buf, strlen(buf) + 1);
-	if (rv == -1) {
-		fprintf(stderr, "Error adding phys_pgd_ptr note: %s\n",
-			strerror(elfc_get_errno(elf)));
-		return -1;
-	}
-
-	return 0;
-}
-
 struct fixup_reg_info
 {
 	bool is_64bit;
@@ -501,8 +435,6 @@ read_oldmem(char *oldmem, char *vmcore, char *extra_vminfo)
 	struct fdio_data *fdio_data;
 	struct vmcoreinfo_data vmci[] = {
 		{ "PAGESIZE", 10 },
-		{ "SYMBOL(swapper_pg_dir)", 16 },
-		{ "ADDRESS(phys_pgd_ptr)", 16 },
 		{ "SIZE(list_head)", 10 },
 		{ NULL }
 	};
@@ -568,35 +500,23 @@ read_oldmem(char *oldmem, char *vmcore, char *extra_vminfo)
 	elfc_setclass(elf, ELFCLASS64);
 	elfc_setencoding(elf, elfc_getencoding(velf));
 
-	if (!vmci[3].found) {
+	if (!vmci[1].found) {
 		fprintf(stderr,
 			"Error: SIZE(list_head) not in vmcore\n");
 	}
-	if (vmci[3].val == 8) {
+	if (vmci[1].val == 8) {
 		fri.is_64bit = false;
-	} else if (vmci[3].val == 16) {
+	} else if (vmci[1].val == 16) {
 		fri.is_64bit = true;
 	} else {
 		fprintf(stderr, "Error: SIZE(list_head) not valid: %llu\n",
-			(unsigned long long) vmci[0].val);
+			(unsigned long long) vmci[1].val);
 		goto out_err;
 	}
 	fri.count = 0;
 
 	copy_elf_notes(elf, velf, fixup_reg_pid, &fri);
 
-	if (!vmci[2].found) {
-		/* Add phys_pgd_ptr to the notes if it doesn't already exist */
-		if (!vmci[1].found) {
-			fprintf(stderr,
-				"Error: swapper_pg_dir not in vmcore\n");
-			goto out_err;
-		}
-		rv = add_phys_pgd_ptr(elf, velf, vmci[1].val);
-		if (rv == -1)
-			goto out_err;
-	}
-	
 	elfc_free(velf);
 	velf = NULL;
 	close(vfd);

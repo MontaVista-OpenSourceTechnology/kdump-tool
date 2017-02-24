@@ -162,8 +162,58 @@ val_to_shift(uint64_t val)
 	return shift;
 }
 
+static int
+conv_pgd_ptr_to_phys(struct elfc *velf, GElf_Addr virt_pgdir, GElf_Addr *pgd)
+{
+	int rv;
+
+	rv = elfc_vmem_to_pmem(velf, virt_pgdir, pgd);
+	if (rv == -1) {
+		int err = elfc_get_errno(velf);
+		struct archinfo *arch;
+		void *arch_data;
+
+		/*
+		 * This is a cheap hack.  kexec on some arches doesn't
+		 * properly add the vaddr.  There is an arch hack
+		 * for those, so look it up.
+		 */
+		arch = find_arch(elfc_getmachine(velf));
+		if (!arch) {
+			fprintf(stderr, "Unknown ELF machine in input"
+				" file: %d\n", elfc_getmachine(velf));
+			return -1;
+		}
+
+		if (arch->setup_arch_pelf) {
+			struct kdt_data d;
+
+			memset(&d, 0, sizeof(d));
+			rv = arch->setup_arch_pelf(velf, &d, &arch_data);
+			if (rv == -1)
+				return -1;
+		}
+
+		rv = -1;
+		if (arch->vmem_to_pmem)
+			rv = arch->vmem_to_pmem(velf, virt_pgdir,
+						pgd, arch_data);
+
+		arch->cleanup_arch_data(arch_data);
+
+		if (rv == -1) {
+			fprintf(stderr, "Error getting swapper_pg_dir "
+				"phys addr: %s\n",
+				strerror(err));
+			return -1;
+		}
+	}
+
+	return 0;
+}
+
 enum base_vmci {
-	VMCI_ADDRESS_phys_pgd_ptr,
+	VMCI_SYMBOL_swapper_pg_dir,
 	VMCI_SIZE_list_head,
 	VMCI_OFFSET_list_head__next,
 	VMCI_OFFSET_list_head__prev,
@@ -228,6 +278,16 @@ int process_base_vmci(struct kdt_data *d, struct vmcoreinfo_data *vmci,
 		return -1;
 	}
 
+	if (vmci[VMCI_SYMBOL_swapper_pg_dir].found) {
+		rv = conv_pgd_ptr_to_phys(elf,
+					  vmci[VMCI_SYMBOL_swapper_pg_dir].val,
+					  &d->pgd);
+		if (rv)
+			pr_err("Warning: Error converting swapper_pg_dir "
+			       "to phys\n");
+		else
+			d->pgd_set = true;
+	}
 	if (d->arch->setup_arch_pelf) {
 		rv = d->arch->setup_arch_pelf(elf, d, &d->arch_data);
 		if (rv == -1)
@@ -1736,7 +1796,7 @@ topelf(int argc, char *argv[])
 	int ofd = 1;
 	int rv = 0;
 	struct vmcoreinfo_data vmci[] = {
-		VMCI_ADDRESS(phys_pgd_ptr),
+		VMCI_SYMBOL(swapper_pg_dir),
 		VMCI_SIZE(list_head),
 		VMCI_OFFSET(list_head, next),
 		VMCI_OFFSET(list_head, prev),
@@ -1827,16 +1887,15 @@ topelf(int argc, char *argv[])
 	if (rv)
 		goto out_err;
 
-	if (!vmci[VMCI_ADDRESS_phys_pgd_ptr].found) {
+	if (!d->pgd_set) {
 		if (d->level == DUMP_ALL)
-			pr_err("Warning: phys pgd ptr not in vmcore\n");
+			pr_err("Warning: swapper_pg_dir not in vmcore\n");
 		else {
-			pr_err("Error: phys pgd ptr not in vmcore, can"
+			pr_err("Error: swapper_pg_dir not in vmcore, can"
 			       " only do all dump level\n");
 			goto out_err;
 		}
 	}
-	d->pgd = vmci[VMCI_ADDRESS_phys_pgd_ptr].val;
 
 	if (outfile) {
 		ofd = creat(outfile, 0644);
@@ -2353,7 +2412,7 @@ tovelf(int argc, char *argv[])
 	int pgd_set = 0;
 	struct elfc *velf = NULL;
 	struct vmcoreinfo_data vmci[] = {
-		VMCI_ADDRESS(phys_pgd_ptr),
+		VMCI_SYMBOL(swapper_pg_dir),
 		VMCI_SIZE(list_head),
 		VMCI_OFFSET(list_head, next),
 		VMCI_OFFSET(list_head, prev),
@@ -2493,13 +2552,9 @@ tovelf(int argc, char *argv[])
 	if (rv)
 		goto out_err;
 
-	if (!pgd_set) {
-		if (vmci[VMCI_ADDRESS_phys_pgd_ptr].found)
-			d->pgd = vmci[VMCI_ADDRESS_phys_pgd_ptr].val;
-		else {
-			pr_err("pgd not given and not in input file.\n");
-			goto out_err;
-		}
+	if (!pgd_set && !d->pgd_set) {
+		pr_err("pgd not given and not in input file.\n");
+		goto out_err;
 	}
 
 	if (outfile) {
@@ -2604,7 +2659,7 @@ addrandomoffset(int argc, char *argv[])
 	int i;
 	int num_notes;
 	struct vmcoreinfo_data vmci[] = {
-		VMCI_ADDRESS(phys_pgd_ptr),
+		VMCI_SYMBOL(swapper_pg_dir),
 		VMCI_SIZE(list_head),
 		VMCI_OFFSET(list_head, next),
 		VMCI_OFFSET(list_head, prev),
@@ -3116,7 +3171,7 @@ virttophys(int argc, char *argv[])
 	struct kdt_data kdt_data, *d = &kdt_data;
 	int pgd_set = 0;
 	struct vmcoreinfo_data vmci[] = {
-		VMCI_ADDRESS(phys_pgd_ptr),
+		VMCI_SYMBOL(swapper_pg_dir),
 		VMCI_SIZE(list_head),
 		VMCI_OFFSET(list_head, next),
 		VMCI_OFFSET(list_head, prev),
@@ -3233,13 +3288,9 @@ virttophys(int argc, char *argv[])
 	if (rv)
 		goto out_err;
 
-	if (!pgd_set) {
-		if (vmci[VMCI_ADDRESS_phys_pgd_ptr].found)
-			d->pgd = vmci[VMCI_ADDRESS_phys_pgd_ptr].val;
-		else {
-			pr_err("pgd not given and not in input file.\n");
-			goto out_err;
-		}
+	if (!pgd_set && !d->pgd_set) {
+		pr_err("pgd not given and not in input file.\n");
+		goto out_err;
 	}
 
 	rv = read_page_maps(d);
