@@ -178,7 +178,6 @@ struct kdt_data {
 	struct elfc *elf;
 	struct elfc *velf;
 	GElf_Addr pgd;
-	bool pgd_set;
 	struct archinfo *arch;
 	void *arch_data;
 	bool is_64bit;
