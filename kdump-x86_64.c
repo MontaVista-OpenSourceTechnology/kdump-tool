@@ -296,6 +296,7 @@ x86_64_arch_setup(struct elfc *pelf, struct kdt_data *d, void **arch_data)
 	/* I'm not sure what the 8 bytes at the end is, but it's required. */
 	d->pt_regs_size = sizeof(struct x86_64_pt_regs) + 8;
 	d->fetch_ptregs = x86_64_task_ptregs;
+
 	return 0;
 }
 

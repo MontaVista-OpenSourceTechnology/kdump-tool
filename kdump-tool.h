@@ -252,6 +252,8 @@ struct kdt_data {
 	uint64_t mips_task_resume;
 	bool thread_sp_found; /* x86-only for now, maybe others. */
 	uint64_t thread_sp;
+	bool thread_ip_found; /* i386-only for now, maybe others. */
+	uint64_t thread_ip;
 	bool x86___thread_sleep_point_found;
 	uint64_t x86___thread_sleep_point;
 	bool x86_context_switch_frame_size_found;

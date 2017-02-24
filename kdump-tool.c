@@ -2145,9 +2145,10 @@ add_cpu_info(GElf_Word type, const char *name, size_t namelen,
 
 enum thread_info_labels {
 	VMCI_SYMBOL_resume, /* for MIPS */
-	VMCI_SYMBOL___thread_sleep_point, /* for X86 */
+	VMCI_SYMBOL___thread_sleep_point, /* for X86_64 */
 	VMCI_OFFSET_thread_struct__sp, /* for X86 */
-	VMCI_SIZE_context_switch_frame, /* For x86 */
+	VMCI_OFFSET_thread_struct__ip, /* for i386 */
+	VMCI_SIZE_context_switch_frame, /* For x86_64 */
 	VMCI_OFFSET_thread_info__cpu_context, /* for ARM */
 	VMCI_SYMBOL___switch_to, /* for ARM */
 	/* Begin required elements. */
@@ -2211,6 +2212,7 @@ handle_kernel_processes_threads(struct kdt_data *d, thread_handler handler,
 		VMCI_SYMBOL(resume),
 		VMCI_SYMBOL(__thread_sleep_point),
 		VMCI_OFFSET(thread_struct, sp),
+		VMCI_OFFSET(thread_struct, ip),
 		VMCI_SIZE(context_switch_frame),
 		VMCI_OFFSET(thread_info, cpu_context),
 		VMCI_SYMBOL(__switch_to),
@@ -2258,6 +2260,9 @@ handle_kernel_processes_threads(struct kdt_data *d, thread_handler handler,
 	d->thread_sp_found = vmci[VMCI_OFFSET_thread_struct__sp].found;
 	if (d->thread_sp_found)
 		d->thread_sp = vmci[VMCI_OFFSET_thread_struct__sp].val;
+	d->thread_ip_found = vmci[VMCI_OFFSET_thread_struct__ip].found;
+	if (d->thread_ip_found)
+		d->thread_ip = vmci[VMCI_OFFSET_thread_struct__ip].val;
 	d->x86_context_switch_frame_size_found =
 		vmci[VMCI_SIZE_context_switch_frame].found;
 	if (d->x86_context_switch_frame_size_found)

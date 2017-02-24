@@ -177,6 +177,18 @@ document thread_vminfo_arm
 	details.
 end
 
+define thread_vminfo_i386
+	thread_vminfo_base
+	printf "OFFSET(thread_struct.sp)=%ld\n", &((struct thread_struct *) 0)->sp
+	printf "OFFSET(thread_struct.ip)=%ld\n", &((struct thread_struct *) 0)->ip
+end
+document thread_vminfo_i386
+	Dump information required by kdump-tool to create a gdb thread
+	per kernel thread instead of the default gdb thread per CPU.
+	This is the i386 version.  See thread_vminfo_base for more
+	details.
+end
+
 define kvtop 
 	# TODO kvtop isn't implemented for mips now.
 	set $ret = (ulong)$arg0

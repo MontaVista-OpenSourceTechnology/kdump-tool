@@ -299,6 +299,68 @@ struct i386_data
 	bool pae;
 };
 
+struct i386_pt_regs {
+	uint32_t ebx;
+	uint32_t ecx;
+	uint32_t edx;
+	uint32_t esi;
+	uint32_t edi;
+	uint32_t ebp;
+	uint32_t eax;
+	uint32_t xds;
+	uint32_t xes;
+	uint32_t xfs;
+	uint32_t xgs;
+	uint32_t orig_eax;
+	uint32_t eip;
+	uint32_t xcs;
+	uint32_t eflags;
+	uint32_t esp;
+	uint32_t xss;
+};
+
+static int
+i386_task_ptregs(struct kdt_data *d, GElf_Addr task, void *regs)
+{
+	uint64_t reg = task + d->task_thread;
+	struct i386_pt_regs *pt_regs = regs;
+	int rv;
+
+	if (!d->thread_sp_found || !d->thread_ip_found) {
+		pr_err("x86-specific thread symbols not found, ptregs cannot "
+		       "be extracted.\n");
+		return -1;
+	}
+	rv = fetch_vaddr32(d, reg + d->thread_sp, &pt_regs->esp, "thread.sp");
+	if (rv) {
+		pr_err("Unable to fetch SP from task struct\n");
+		return rv;
+	}
+	rv = fetch_vaddr32(d, reg + d->thread_ip, &pt_regs->eip, "thread.ip");
+	if (rv) {
+		pr_err("Unable to fetch IP from task struct\n");
+		return rv;
+	}
+	rv = fetch_vaddr32(d, pt_regs->esp, &pt_regs->ebp, "[esp]->ebp");
+	if (rv) {
+		pr_err("Unable to fetch BP from stack\n");
+		return rv;
+	}
+
+	/* The code pushes ebp and flags before switching, remove those. */
+	pt_regs->esp += 8;
+
+	/*
+	 * The next two instructions after IP are the flag and ebp
+	 * pops, skip them, one byte instructions for each.
+	 */
+	pt_regs->eip += 2;
+
+	/* We should only need the EIP, EBP and ESP. */
+
+	return 0;
+}
+
 static int
 i386_arch_setup(struct elfc *pelf, struct kdt_data *d, void **arch_data)
 {
@@ -324,6 +386,10 @@ i386_arch_setup(struct elfc *pelf, struct kdt_data *d, void **arch_data)
 		d->max_physmem_bits = 36;
 	else
 		d->max_physmem_bits = 32;
+
+	/* I'm not sure what the 4 bytes at the end is, but it's required. */
+	d->pt_regs_size = sizeof(struct i386_pt_regs) + 4;
+	d->fetch_ptregs = i386_task_ptregs;
 
 	return 0;
 }
