@@ -255,6 +255,10 @@ struct kdt_data {
 	uint64_t x86___thread_sleep_point;
 	bool x86_context_switch_frame_size_found;
 	uint64_t x86_context_switch_frame_size;
+	bool arm_thread_info_cpu_context_found;
+	uint64_t arm_thread_info_cpu_context;
+	bool arm___switch_to_found;
+	uint64_t arm___switch_to;
 
 	/* Set by arch code. */
 	unsigned int section_size_bits;

@@ -2090,6 +2090,8 @@ enum thread_info_labels {
 	VMCI_SYMBOL___thread_sleep_point, /* for X86 */
 	VMCI_OFFSET_thread_struct__sp, /* for X86 */
 	VMCI_SIZE_context_switch_frame, /* For x86 */
+	VMCI_OFFSET_thread_info__cpu_context, /* for ARM */
+	VMCI_SYMBOL___switch_to, /* for ARM */
 	/* Begin required elements. */
 #define KV_REQ VMCI_SYMBOL_init_task
 	VMCI_SYMBOL_init_task,
@@ -2152,6 +2154,8 @@ handle_kernel_processes_threads(struct kdt_data *d, thread_handler handler,
 		VMCI_SYMBOL(__thread_sleep_point),
 		VMCI_OFFSET(thread_struct, sp),
 		VMCI_SIZE(context_switch_frame),
+		VMCI_OFFSET(thread_info, cpu_context),
+		VMCI_SYMBOL(__switch_to),
 		VMCI_SYMBOL(init_task),
 		VMCI_OFFSET(task_struct, stack),
 		VMCI_OFFSET(task_struct, tasks),
@@ -2201,6 +2205,14 @@ handle_kernel_processes_threads(struct kdt_data *d, thread_handler handler,
 	if (d->x86_context_switch_frame_size_found)
 		d->x86_context_switch_frame_size =
 			vmci[VMCI_SIZE_context_switch_frame].val;
+	d->arm_thread_info_cpu_context_found =
+		vmci[VMCI_OFFSET_thread_info__cpu_context].found;
+	if (d->arm_thread_info_cpu_context_found)
+		d->arm_thread_info_cpu_context =
+			vmci[VMCI_OFFSET_thread_info__cpu_context].val;
+	d->arm___switch_to_found = vmci[VMCI_SYMBOL___switch_to].found;
+	if (d->arm___switch_to_found)
+		d->arm___switch_to = vmci[VMCI_SYMBOL___switch_to].val;
 
 	init_task_addr = vmci[VMCI_SYMBOL_init_task].val;
 

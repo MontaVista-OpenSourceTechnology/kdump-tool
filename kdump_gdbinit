@@ -95,11 +95,20 @@ define lsmod
 	set $head=(long) &modules
 	set $modl=(long) modules.next
 
-	printf "Name                 Base Addr          Module Data\n"
+	if (sizeof(long) == 4)
+		printf "Name                 Base Addr  Module Data\n"
+	else
+		printf "Name                 Base Addr          Module Data\n"
+	end
 	while ($modl != $head)
 		set $mod=(struct module *) ($modl - $nextoff)
-		printf "%-20s 0x%12llx ((struct module *) 0x%12llx)\n", \
+		if (sizeof(long) == 4)
+		    printf "%-20s 0x%08llx ((struct module *) 0x%08llx)\n", \
 			$mod->name, $mod->module_core_rx, $mod
+		else
+		    printf "%-20s 0x%016llx ((struct module *) 0x%016llx)\n", \
+			$mod->name, $mod->module_core_rx, $mod
+		end
 		set $modl=(long) $mod->list.next
 	end
 end
@@ -154,6 +163,18 @@ document thread_vminfo_x86_64
 	Make sure to fix SIZE(context_switch_frame) and possibly
 	SYMBOL(__thread_sleep_point) to be the actual values for your
 	system.  Read the man page for details.
+end
+
+define thread_vminfo_arm
+	thread_vminfo_base
+	printf "OFFSET(thread_info.cpu_context)=%ld\n", &((struct thread_info *) 0)->cpu_context
+	printf "SYMBOL(__switch_to)=%lx\n", __switch_to
+end
+document thread_vminfo_arm
+	Dump information required by kdump-tool to create a gdb thread
+	per kernel thread instead of the default gdb thread per CPU.
+	This is the ARM version.  See thread_vminfo_base for more
+	details.
 end
 
 define kvtop 

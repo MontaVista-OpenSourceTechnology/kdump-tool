@@ -98,6 +98,53 @@ handle_pte(struct arm_walk_data *awd, GElf_Addr vaddr, GElf_Addr pteaddr,
 }
 
 static int
+arm_task_ptregs(struct kdt_data *d, GElf_Addr task, void *regs)
+{
+	uint64_t thread_info;
+	uint32_t *pt_regs = regs;
+	uint32_t offset = d->arm_thread_info_cpu_context;
+	int rv;
+
+	if (!d->arm_thread_info_cpu_context_found ||
+	    !d->arm___switch_to_found) {
+		pr_err("ARM thread_info cpu_context offset or __switch to "
+		       "missing from vminfo, unable to convert processes "
+		       "to gdb threads\n");
+		return -1;
+	}
+
+	rv = fetch_vaddrlong(d, task + d->task_stack, &thread_info,
+			     "task_stack");
+	if (rv)
+		return rv;
+
+#define GETREG(name, num, coffset) do { \
+	rv = fetch_vaddr32(d, thread_info + offset + (coffset * 4),	    \
+			   pt_regs + num, name);			    \
+	if (rv)								    \
+		return rv;						    \
+	} while(0)
+
+	GETREG("r4", 4, 0);
+	GETREG("r5", 5, 1);
+	GETREG("r6", 6, 2);
+	GETREG("r7", 7, 3);
+	GETREG("r8", 8, 4);
+	GETREG("r9", 9, 5);
+	GETREG("sl", 10, 6);
+	GETREG("fp", 11, 7);
+	GETREG("sp", 13, 8);
+	/*
+	 * This is called "pc" in cpu_context_save, but we save from the
+	 * inside of __switch_to, so it's really lr.
+	 */
+	GETREG("lr", 14, 9);
+	pt_regs[15] = d->arm___switch_to;
+
+	return 0;
+}
+
+static int
 arm_arch_setup(struct elfc *pelf, struct kdt_data *d, void **arch_data)
 {
 	struct arm_walk_data *awd;
@@ -114,6 +161,9 @@ arm_arch_setup(struct elfc *pelf, struct kdt_data *d, void **arch_data)
 
 	d->section_size_bits = 28;
 	d->max_physmem_bits = 32;
+
+	d->fetch_ptregs = arm_task_ptregs;
+	d->pt_regs_size = 18 * 4 + 4; /* 4 extra bytes at the end. */
 
 	*arch_data = awd;
 

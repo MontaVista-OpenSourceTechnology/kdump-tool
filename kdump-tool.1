@@ -239,7 +239,7 @@ gdb vmlinux vdump
 
 source kdump_gdbinit
 
-thread_vminfo_<arch>  # <arch> is either mips or x86_64
+thread_vminfo_<arch>  # <arch> is either mips, arm, or x86_64
 
 <save the output to a file name thread_vminfo and quit gdb>
 
@@ -339,7 +339,7 @@ kexec(8)
 .SH "KNOWN PROBLEMS"
 This is still fairly primitive and doesn't support all architectures.
 
-Process to gdb thread processing only works for MIPS and X86_64.
+Process to gdb thread processing only works for MIPS, ARM, and X86_64.
 
 .SH AUTHOR
 .PP
