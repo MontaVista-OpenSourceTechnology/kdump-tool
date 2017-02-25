@@ -2282,8 +2282,13 @@ handle_kernel_processes_threads(struct kdt_data *d, thread_handler handler,
 	return 0;
 }
 
+struct proc_thread_data {
+	int cpu; /* Count CPUs for pid 0 handling. */
+};
+
 static int add_proc_thread(struct kdt_data *d, GElf_Addr task, void *userdata)
 {
+	struct proc_thread_data *ptdata = userdata;
 	void *data, *pt_regsptr;
 	unsigned int len;
 	int rv;
@@ -2299,6 +2304,12 @@ static int add_proc_thread(struct kdt_data *d, GElf_Addr task, void *userdata)
 	rv = fetch_vaddr32(d, task + d->task_pid, &pid, "task.pid");
 	if (rv)
 		return rv;
+
+	if (pid == 0) {
+		/* Handle pid 0 so it matches what's done in oldmem. */
+		pid = -ptdata->cpu;
+		ptdata->cpu++;
+	}
 
 	/* If it's a running thread, use the one provided by the kernel. */
 	for (cpu = d->cpus; cpu; cpu = cpu->next) {
@@ -2575,7 +2586,11 @@ tovelf(int argc, char *argv[])
 	elfc_set_fd(velf, ofd);
 
 	if (proc_threads) {
-		rv = handle_kernel_processes_threads(d, add_proc_thread, NULL);
+		struct proc_thread_data ptdata;
+
+		ptdata.cpu = 0;
+		rv = handle_kernel_processes_threads(d, add_proc_thread,
+						     &ptdata);
 		if (rv)
 			goto out_err;
 	}
