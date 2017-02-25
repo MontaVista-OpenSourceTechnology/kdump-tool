@@ -537,10 +537,13 @@ read_oldmem(char *oldmem, char *vmcore, char *extra_vminfo)
 	/* If a /dev/mem file wasn't supplied, just use /proc/vmcore. */
 	if (!oldmem) {
 		if (!vmci[2].found) {
-			/* Add phys_pgd_ptr to the notes if it doesn't already exist */
+			/*
+			 * Add phys_pgd_ptr to the notes if it doesn't
+			 * already exist.
+			 */
 			if (!vmci[1].found) {
 				fprintf(stderr,
-					"Error: swapper_pg_dir not in vmcore\n");
+				    "Error: swapper_pg_dir not in vmcore\n");
 				goto out_err;
 			}
 

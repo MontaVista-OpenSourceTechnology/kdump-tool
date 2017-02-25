@@ -786,6 +786,7 @@ enum page_map_vmci {
 	VMCI_SIZE_page,
 	VMCI_OFFSET_page__flags,
 	VMCI_OFFSET_page___count,
+	VMCI_OFFSET_page___refcount, /* _count was renamed _refcount in 4.6 */
 	VMCI_OFFSET_page__mapping,
 	VMCI_OFFSET_page__lru,
 	VMCI_OFFSET_page___mapcount,
@@ -1218,6 +1219,7 @@ read_page_maps(struct kdt_data *d)
 		VMCI_SIZE(page),
 		VMCI_OFFSET(page, flags),
 		VMCI_OFFSET(page, _count),
+		VMCI_OFFSET(page, _refcount),
 		VMCI_OFFSET(page, mapping),
 		VMCI_OFFSET(page, lru),
 		VMCI_OFFSET(page, _mapcount),
@@ -1281,8 +1283,15 @@ read_page_maps(struct kdt_data *d)
 
 	VMCI_CHECK_FOUND(vmci, OFFSET, page__flags);
 	d->page_flags_offset = vmci[VMCI_OFFSET_page__flags].val;
-	VMCI_CHECK_FOUND(vmci, OFFSET, page___count);
-	d->page_count_offset = vmci[VMCI_OFFSET_page___count].val;
+	if (vmci[VMCI_OFFSET_page___refcount].found)
+		d->page_count_offset = vmci[VMCI_OFFSET_page___refcount].val;
+	else if (vmci[VMCI_OFFSET_page___count].found)
+		d->page_count_offset = vmci[VMCI_OFFSET_page___count].val;
+	else {
+		pr_err("Error: neither page___count nor page___refcount found "
+		       "in vmcore\n");
+		return -1;
+	}
 	VMCI_CHECK_FOUND(vmci, OFFSET, page__mapping);
 	d->page_mapping_offset = vmci[VMCI_OFFSET_page__mapping].val;
 	VMCI_CHECK_FOUND(vmci, OFFSET, page__lru);
