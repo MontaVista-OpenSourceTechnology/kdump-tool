@@ -457,7 +457,14 @@ copy_elf_notes(struct elfc *out, struct elfc *in,
 				goto out_err;
 			rdata = data;
 		}
-		rv = elfc_add_note(out, type, name, namelen, rdata, datalen);
+		if (out == in) {
+			/* Only fixing up, just set the data. */
+			rv = elfc_set_note_data(in, i, 0, 0, NULL, 0,
+						rdata, datalen);
+		} else {
+			rv = elfc_add_note(out, type, name, namelen,
+					   rdata, datalen);
+		}
 		if (data)
 			free(data);
 		if (rv == -1)

@@ -533,6 +533,20 @@ read_oldmem(char *oldmem, char *vmcore, char *extra_vminfo)
 	}
 
 	handle_vminfo_notes(velf, vmci, extra_vminfo);
+	if (!vmci[3].found) {
+		fprintf(stderr,
+			"Error: SIZE(list_head) not in vmcore\n");
+	}
+	if (vmci[3].val == 8) {
+		fri.is_64bit = false;
+	} else if (vmci[3].val == 16) {
+		fri.is_64bit = true;
+	} else {
+		fprintf(stderr, "Error: SIZE(list_head) not valid: %llu\n",
+			(unsigned long long) vmci[0].val);
+		goto out_err;
+	}
+	fri.count = 0;
 
 	/* If a /dev/mem file wasn't supplied, just use /proc/vmcore. */
 	if (!oldmem) {
@@ -551,6 +565,9 @@ read_oldmem(char *oldmem, char *vmcore, char *extra_vminfo)
 			if (rv == -1)
 				goto out_err;
 		}
+
+		/* Just do the fixup. */
+		copy_elf_notes(velf, velf, fixup_reg_pid, &fri);
 
 		return velf;
 	}
@@ -585,21 +602,6 @@ read_oldmem(char *oldmem, char *vmcore, char *extra_vminfo)
 	 */ 
 	elfc_setclass(elf, ELFCLASS64);
 	elfc_setencoding(elf, elfc_getencoding(velf));
-
-	if (!vmci[3].found) {
-		fprintf(stderr,
-			"Error: SIZE(list_head) not in vmcore\n");
-	}
-	if (vmci[3].val == 8) {
-		fri.is_64bit = false;
-	} else if (vmci[3].val == 16) {
-		fri.is_64bit = true;
-	} else {
-		fprintf(stderr, "Error: SIZE(list_head) not valid: %llu\n",
-			(unsigned long long) vmci[0].val);
-		goto out_err;
-	}
-	fri.count = 0;
 
 	copy_elf_notes(elf, velf, fixup_reg_pid, &fri);
 
