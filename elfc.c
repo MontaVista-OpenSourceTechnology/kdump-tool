@@ -1911,6 +1911,67 @@ elfc_get_note(struct elfc *e, int index,
 }
 
 int
+elfc_set_note_data(struct elfc *e, int index,
+		   int set_type, GElf_Word type,
+		   const char *name, size_t namelen,
+		   const void *data, size_t datalen)
+{
+	int rv;
+	char *newname = NULL;
+	char *newdata = NULL;
+
+	if (!e->notes && (e->fd != -1)) {
+		rv = elfc_read_notes(e);
+		if (rv == -1)
+			return rv;
+	}
+
+	if (index > e->num_notes) {
+		e->eerrno = EINVAL;
+		return -1;
+	}
+
+	if (set_type)
+		e->notes[index].type = type;
+	if (name) {
+		newname = malloc(namelen + 1);
+		if (!newname) {
+			e->eerrno = ENOMEM;
+			goto out_err;
+		}
+		memcpy(newname, name, namelen);
+		newname[namelen] = '\0';
+	}
+	if (data) {
+		newdata = malloc(datalen);
+		if (!newdata) {
+			e->eerrno = ENOMEM;
+			goto out_err;
+		}
+		memcpy(newdata, data, datalen);
+	}
+	if (name) {
+		free(e->notes[index].name);
+		e->notes[index].name = newname;
+		e->notes[index].namelen = namelen;
+	}
+	if (data) {
+		free(e->notes[index].data);
+		e->notes[index].data = newdata;
+		e->notes[index].datalen = datalen;
+	}
+
+	return 0;
+
+out_err:
+	if (newname)
+		free(newname);
+	if (newdata)
+		free(newdata);
+	return -1;
+}
+
+int
 elfc_del_note(struct elfc *e, int index)
 {
 	int rv;

@@ -476,6 +476,17 @@ int elfc_get_note(struct elfc *e, int index,
 		  const void **data, size_t *datalen);
 
 /*
+ * Set the data for a note.  If set_type is true, then the type is set.
+ * name and namelen are only set if name is non-NULL, data and datalen
+ * are only set if data is non-NULL;
+ * Returns -1 on error, use elfc_get_errno() to get the errno.
+ */
+int elfc_set_note_data(struct elfc *e, int index,
+		       int set_type, GElf_Word type,
+		       const char *name, size_t namelen,
+		       const void *data, size_t datalen);
+
+/*
  * Delete the given note.
  * Returns -1 on error, use elfc_get_errno() to get the errno.
  */
