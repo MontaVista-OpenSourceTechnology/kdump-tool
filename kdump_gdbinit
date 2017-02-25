@@ -5,6 +5,22 @@
 #
 # Code based on kernel: Documentation/kdump/gdbmacros.txt
 
+define majver
+       set $majver = init_uts_ns.name.release[0] - '0'
+end
+document majver
+	Set the variable $majver to the major kernel version
+end
+
+define minver
+	set $minver = init_uts_ns.name.release[2] - '0'
+	if init_uts_ns.name.release[3] != '.'
+		set $minver = $minver * 10 + init_uts_ns.name.release[3] - '0'
+	end
+end
+document minver
+	Set the variable $minver to the minor kernel version
+end
 
 define dmesg
 	set $idx = log_first_idx
@@ -26,7 +42,6 @@ define dmesg
 		set $idx += $entry->len
 	end
 end
-
 document dmesg
 	print the kernel log buffer
 end
@@ -38,13 +53,12 @@ define prpid
 
 	if ($tty)
 		set $tty_name = ($tty.name)
-		printf "%d\t%s\t%s\t((struct task_struct *) 0x%llx)\n", \
+		printf "%d\t%s\t%-16s((struct task_struct *) 0x%llx)\n", \
 			$t.pid, $tty_name, $t.comm, $t
 	else
-		printf "%d\t?\t%s\t((struct task_struct *) 0x%llx)\n", \
+		printf "%d\t?\t%-16s((struct task_struct *) 0x%llx)\n", \
 			$t.pid, $t.comm, $t
 	end
-	#printf "\tSP:0x%llx  FP:0x%llx\n", $t.thread.reg29, $t.thread.reg30
 end
 document prpid
 	print info for a pid given a task struct
@@ -54,7 +68,6 @@ define prthread
 	set $thread=$arg0
 	printf "    %d\t((struct task_struct *) 0x%llx)\n", \
 			$thread.pid, $thread
-	#printf "\t    SP:0x%llx  FP:0x%llx\n", $thread.thread.reg29, $thread.thread.reg30
 end
 document prthread
 	print info for a thread given a task struct
@@ -65,7 +78,7 @@ define ps
 	set $toff=((size_t)&((struct task_struct *)0)->thread_node)
 	set $init_p=(struct task_struct *)&init_task
 	set $p=$init_p
-	printf  "PID\t tty\t CMD\tTASK_STRUCT\n"	
+	printf  "PID\ttty\tCMD\t\tTASK_STRUCT\n"
 
 	while (1)
 		prpid $p
@@ -95,6 +108,9 @@ define lsmod
 	set $head=(long) &modules
 	set $modl=(long) modules.next
 
+	majver
+	minver
+
 	if (sizeof(long) == 4)
 		printf "Name                 Base Addr  Module Data\n"
 	else
@@ -102,12 +118,17 @@ define lsmod
 	end
 	while ($modl != $head)
 		set $mod=(struct module *) ($modl - $nextoff)
+		if ($majver > 4 || $majver == 4 && $minver >= 4)
+			set $corestart = $mod->core_layout.base
+		else
+			set $corestart = $mod->module_core
+		end
 		if (sizeof(long) == 4)
 		    printf "%-20s 0x%08llx ((struct module *) 0x%08llx)\n", \
-			$mod->name, $mod->module_core_rx, $mod
+			$mod->name, $corestart, $mod
 		else
 		    printf "%-20s 0x%016llx ((struct module *) 0x%016llx)\n", \
-			$mod->name, $mod->module_core_rx, $mod
+			$mod->name, $corestart, $mod
 		end
 		set $modl=(long) $mod->list.next
 	end

@@ -747,11 +747,28 @@ find_page_by_pfn(struct kdt_data *d, struct page_range *range, uint64_t pfn,
 			    &page->count, "page.count");
 	if (rv == -1)
 		goto out_err;
-	rv = fetch_structlong(d, d->pagedata, d->size_page,
-			      d->page_mapping_offset,
-			      &page->mapping, "page.mapping");
+	if (d->page_compound_head_found) {
+		uint64_t head_page;
+
+		rv = fetch_structlong(d, d->pagedata, d->size_page,
+				      d->page_compound_head_offset,
+				      &head_page, "page.compound_head");
+		if (rv == -1)
+			goto out_err;
+		if (!(head_page & 1))
+			goto mapping_in_page;
+		head_page -= 1;
+		rv = fetch_vaddrlong(d, head_page + d->page_mapping_offset,
+				     &page->mapping, "headpage.mapping");
+	} else {
+	mapping_in_page:
+		rv = fetch_structlong(d, d->pagedata, d->size_page,
+				      d->page_mapping_offset,
+				      &page->mapping, "page.mapping");
+	}
 	if (rv == -1)
 		goto out_err;
+
 	rv = fetch_structlong(d, d->pagedata, d->size_page,
 			      d->page_lru_offset,
 			      &(page->lru[0]), "page.lru.next");
@@ -788,6 +805,7 @@ enum page_map_vmci {
 	VMCI_OFFSET_page___count,
 	VMCI_OFFSET_page___refcount, /* _count was renamed _refcount in 4.6 */
 	VMCI_OFFSET_page__mapping,
+	VMCI_OFFSET_page__compound_head,
 	VMCI_OFFSET_page__lru,
 	VMCI_OFFSET_page___mapcount,
 	VMCI_OFFSET_page__private,
@@ -1221,6 +1239,7 @@ read_page_maps(struct kdt_data *d)
 		VMCI_OFFSET(page, _count),
 		VMCI_OFFSET(page, _refcount),
 		VMCI_OFFSET(page, mapping),
+		VMCI_OFFSET(page, compound_head),
 		VMCI_OFFSET(page, lru),
 		VMCI_OFFSET(page, _mapcount),
 		VMCI_OFFSET(page, private),
@@ -1300,6 +1319,11 @@ read_page_maps(struct kdt_data *d)
 	d->page_mapcount_offset = vmci[VMCI_OFFSET_page___mapcount].val;
 	VMCI_CHECK_FOUND(vmci, OFFSET, page__private);
 	d->page_private_offset = vmci[VMCI_OFFSET_page__private].val;
+	if (vmci[VMCI_OFFSET_page__compound_head].found) {
+		d->page_compound_head_offset =
+			vmci[VMCI_OFFSET_page__compound_head].val;
+		d->page_compound_head_found = true;
+	}
 
 	VMCI_CHECK_FOUND(vmci, SIZE, pglist_data);
 	d->pglist_data_size = vmci[VMCI_SIZE_pglist_data].val;

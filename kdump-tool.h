@@ -213,6 +213,8 @@ struct kdt_data {
 	unsigned int page_lru_offset;
 	unsigned int page_mapcount_offset;
 	unsigned int page_private_offset;
+	bool page_compound_head_found;
+	unsigned int page_compound_head_offset;
 
 	/* page flag bits */
 	uint64_t PG_lru;
