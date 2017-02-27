@@ -1200,6 +1200,10 @@ read_discontig_maps(struct kdt_data *d, struct vmcoreinfo_data *vmci)
 	VMCI_CHECK_FOUND(vmci, LENGTH, node_data);
 	count = vmci[VMCI_LENGTH_node_data].val;
 
+	VMCI_CHECK_FOUND(vmci, OFFSET, pglist_data__node_mem_map);
+	d->node_mem_map_offset =
+		vmci[VMCI_OFFSET_pglist_data__node_mem_map].val;
+
 	node_data = malloc(count * d->ptrsize);
 	if (!node_data) {
 		pr_err("Out of memory allocating node data\n");
