@@ -71,8 +71,6 @@
 #define PHYSADDRMASK_L1		(PHYSADDRMASK & ~PAGEMASK_L1)
 #define PAGESIZE_L1		(1 << PAGESHIFT_L1)
 
-#define KERNBASE		0xffff000000000000
-
 static int
 handle_pte(struct elfc *pelf, GElf_Addr vaddr, GElf_Addr pteaddr,
 	   GElf_Addr begin_addr, GElf_Addr end_addr,
@@ -106,7 +104,7 @@ handle_pte(struct elfc *pelf, GElf_Addr vaddr, GElf_Addr pteaddr,
 		/* 4K page */
 		rv = handle_page(pelf, 
 				 lpte & PHYSADDRMASK_4K,
-				 newvaddr | KERNBASE,
+				 newvaddr,
 				 PAGESIZE_4K, userdata);
 		if (rv == -1)
 			return -1;
@@ -135,7 +133,7 @@ handle_pde(struct elfc *pelf, GElf_Addr pgd,
 		return -1;
 	}
 
-	for (i = start; i < end; i++) {
+	for (i = start; i <= end; i++) {
 		GElf_Addr newvaddr;
 		uint32_t lpde = le32toh(pde[i]);
 
@@ -147,7 +145,7 @@ handle_pde(struct elfc *pelf, GElf_Addr pgd,
 			/* 4mb page */
 			rv = handle_page(pelf, 
 					 lpde & PHYSADDRMASK_4M,
-					 newvaddr | KERNBASE,
+					 newvaddr,
 					 PAGESIZE_4M, userdata);
 		} else {
 			rv = handle_pte(pelf, newvaddr,
@@ -182,7 +180,7 @@ handle_pae_pte(struct elfc *pelf, GElf_Addr vaddr, GElf_Addr pteaddr,
 		return -1;
 	}
 
-	for (i = start; i < end; i++) {
+	for (i = start; i <= end; i++) {
 		GElf_Addr newvaddr;
 		uint64_t lpte = le64toh(pte[i]);
 
@@ -194,7 +192,7 @@ handle_pae_pte(struct elfc *pelf, GElf_Addr vaddr, GElf_Addr pteaddr,
 		/* 4K page */
 		rv = handle_page(pelf, 
 				 lpte & PHYSADDRMASK_PAE_4K,
-				 newvaddr | KERNBASE,
+				 newvaddr,
 				 PAGESIZE_PAE_4K, userdata);
 		if (rv == -1)
 			return -1;
@@ -223,7 +221,7 @@ handle_pae_pde(struct elfc *pelf, GElf_Addr vaddr, GElf_Addr pdeaddr,
 		return -1;
 	}
 
-	for (i = start; i < end; i++) {
+	for (i = start; i <= end; i++) {
 		GElf_Addr newvaddr;
 		uint64_t lpde = le64toh(pde[i]);
 
@@ -235,7 +233,7 @@ handle_pae_pde(struct elfc *pelf, GElf_Addr vaddr, GElf_Addr pdeaddr,
 			/* 2mb page */
 			rv = handle_page(pelf, 
 					 lpde & PHYSADDRMASK_2M,
-					 newvaddr | KERNBASE,
+					 newvaddr,
 					 PAGESIZE_2M, userdata);
 		} else {
 			rv = handle_pae_pte(pelf, newvaddr,
@@ -390,6 +388,8 @@ i386_arch_setup(struct elfc *pelf, struct kdt_data *d, void **arch_data)
 	/* I'm not sure what the 4 bytes at the end is, but it's required. */
 	d->pt_regs_size = sizeof(struct i386_pt_regs) + 4;
 	d->fetch_ptregs = i386_task_ptregs;
+
+	*arch_data = md;
 
 	return 0;
 }
