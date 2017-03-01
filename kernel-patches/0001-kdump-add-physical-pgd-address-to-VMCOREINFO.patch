@@ -1,0 +1,36 @@
+From 947c5c52e0cb37e694a6165a23db8c6d98660170 Mon Sep 17 00:00:00 2001
+From: Corey Minyard <cminyard@mvista.com>
+Date: Mon, 3 Feb 2014 15:54:23 -0600
+Subject: [PATCH] kdump: Add physical pgd address to VMCOREINFO
+
+Add the physical address of the init_mm page directory.  This
+lets software generate a virtual memory map pretty easily.
+
+Signed-off-by: Corey Minyard <cminyard@mvista.com>
+---
+
+diff --git a/kernel/kexec.c b/kernel/kexec.c
+index 915c3db..e893c94 100644
+--- a/kernel/kexec.c
++++ b/kernel/kexec.c
+@@ -1562,6 +1562,8 @@ unsigned long __attribute__ ((weak)) paddr_vmcoreinfo_note(void)
+ 
+ static int __init crash_save_vmcoreinfo_init(void)
+ {
++	unsigned long phys_pgd_ptr;
++
+ 	VMCOREINFO_OSRELEASE(init_uts_ns.name.release);
+ 	VMCOREINFO_PAGESIZE(PAGE_SIZE);
+ 
+@@ -1625,7 +1634,8 @@ static int __init crash_save_vmcoreinfo_init(void)
+ 	VMCOREINFO_NUMBER(PG_hwpoison);
+ #endif
+ 	VMCOREINFO_NUMBER(PAGE_BUDDY_MAPCOUNT_VALUE);
++	phys_pgd_ptr = virt_to_phys(swapper_pg_dir);
++	VMCOREINFO_ADDRESS(phys_pgd_ptr);
+ 
+ 	arch_crash_save_vmcoreinfo();
+ 	update_vmcoreinfo_note();
+-- 
+2.7.4
+
