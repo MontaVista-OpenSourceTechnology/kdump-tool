@@ -1,0 +1,81 @@
+From 05db09230121890e91d57618353d5289401eaad2 Mon Sep 17 00:00:00 2001
+From: Corey Minyard <cminyard@mvista.com>
+Date: Tue, 14 Feb 2017 11:21:00 -0600
+Subject: [PATCH] mips: Add an option to set up exception frames for gdb
+
+The current kernel exception frames are not understood by gdb, so a
+traceback through an exception or interrupt does not work.  Add an
+option to adjust the frame so it looks like a proper MIPS64 exception
+frame in Linux userland.
+
+Signed-off-by: Corey Minyard <cminyard@mvista.com>
+---
+ arch/mips/Kconfig.debug        |  9 +++++++++
+ arch/mips/include/asm/ptrace.h | 19 +++++++++++++++++--
+ 2 files changed, 26 insertions(+), 2 deletions(-)
+
+diff --git a/arch/mips/Kconfig.debug b/arch/mips/Kconfig.debug
+index 82b4f3e..66dc6a4 100644
+--- a/arch/mips/Kconfig.debug
++++ b/arch/mips/Kconfig.debug
+@@ -111,6 +111,15 @@ config RUNTIME_DEBUG
+ 	  arch/mips/include/asm/debug.h for debugging macros.
+ 	  If unsure, say N.
+ 
++config GDB_EXCEPTION_FRAME
++	bool "Make exception/interrupt frames match userspace signal frames"
++	default n
++	help
++	  Make the exception/interrupt stack frame match up with the
++	  userspace stack frame closely enough that gdb can handle it
++	  properly.  Useful for kdump.  It adds quite a bit of size to
++	  the stack frame, around 304 bytes.  If unsure, say N.
++
+ config DEBUG_ZBOOT
+ 	bool "Enable compressed kernel support debugging"
+ 	depends on DEBUG_KERNEL && SYS_SUPPORTS_ZBOOT
+diff --git a/arch/mips/include/asm/ptrace.h b/arch/mips/include/asm/ptrace.h
+index ad16caa..6073f4f 100644
+--- a/arch/mips/include/asm/ptrace.h
++++ b/arch/mips/include/asm/ptrace.h
+@@ -21,13 +21,26 @@
+  * system call/exception. As usual the registers k0/k1 aren't being saved.
+  */
+ struct pt_regs {
+-#ifdef CONFIG_32BIT
++#if defined(CONFIG_32BIT) || defined (CONFIG_GDB_EXCEPTION_FRAME)
+ 	/* Pad bytes for argument save space on the stack. */
+-	unsigned long pad0[6];
++	/*
++	 * Also used to pad things out so the sigframe matches the 64-bit
++	 * userspace sigframe to let GDB decode a kdump trace through an
++	 * exception/interrupt.
++	 */
++	u32 pad0[6];
+ #endif
+ 
+ 	/* Saved main processor registers. */
+ 	unsigned long regs[32];
++#ifdef CONFIG_GDB_EXCEPTION_FRAME
++	/*
++	 * Add in the padding to make sure the PC appears at the the same
++	 * place as it does in the sigframe/sigcontext structure.
++	 */
++	unsigned long fpregs[32];
++	unsigned long dummy2[2];
++#endif
+ 
+ 	/* Saved special registers. */
+ 	unsigned long cp0_status;
+@@ -35,6 +48,8 @@ struct pt_regs {
+ 	unsigned long lo;
+ #ifdef CONFIG_CPU_HAS_SMARTMIPS
+ 	unsigned long acx;
++#elif defined(CONFIG_GDB_EXCEPTION_FRAME)
++	unsigned long dummy1;
+ #endif
+ 	unsigned long cp0_badvaddr;
+ 	unsigned long cp0_cause;
+-- 
+2.7.4
+
