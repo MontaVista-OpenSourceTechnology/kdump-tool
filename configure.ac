@@ -1,4 +1,4 @@
-AC_INIT([kdump-tool], [1.1.0], [minyard@mvista.com])
+AC_INIT([kdump-tool], [1.2.0], [minyard@mvista.com])
 AM_INIT_AUTOMAKE([-Wall])
 AC_PROG_CC
 AM_PROG_LIBTOOL
