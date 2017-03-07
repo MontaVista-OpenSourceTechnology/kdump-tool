@@ -36,3 +36,11 @@ any existing offset information.
 
 Then do "gdb vmlinux vmcore".  For more information, see:
   http://www.elinux.org/Debugging_The_Linux_Kernel_Using_Gdb
+
+By default, each CPU will appear as a thread in gdb, so you will be
+able to see the state of each running thread, backtrace it, look at
+local variables, etc.  For architectures that support it, you can tell
+kdump-tool to create a thread for each process/thread running in the
+system, so you can backtrace and look at local variables for processes
+that were not running when the system crashed.  The procedure for this
+is somewhat complex, see the man page for details on how to do this.
