@@ -1,3 +1,10 @@
+WARNING - This package has been renamed kdump-elftool to remove a
+name collision with Ubuntu's kdump-tool.  Pluse use the kdump-elftool
+repository instead of this one.
+
+
+
+
 This is kdumptool, a tool for creating usable coredumps from a kernel
 crash.
 
